@@ -7,10 +7,14 @@ import type { Connection } from "../contracts/studio";
 import { makeRecipe } from "../core/recipe/model";
 
 async function until<T>(read: () => Promise<T>, done: (value: T) => boolean) {
-  for (let attempt = 0; attempt < 200; attempt++) {
-    const value = await read(); if (done(value)) return value;
-    await new Promise<void>(resolve => setImmediate(resolve));
+  const deadline = Date.now() + 5_000;
+  let value = await read();
+  while (!done(value)) {
+    if (Date.now() >= deadline) break;
+    await new Promise<void>(resolve => setTimeout(resolve, 25));
+    value = await read();
   }
+  if (done(value)) return value;
   throw new Error("job did not settle");
 }
 const recipe = makeRecipe("Synthetic queue", [{ type: "scene", tags: ["blue sky"], text: "" }]);

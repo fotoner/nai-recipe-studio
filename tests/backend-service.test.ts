@@ -12,11 +12,14 @@ async function tempProfile() {
 }
 
 async function waitFor<T>(read: () => Promise<T>, done: (value: T) => boolean) {
-  for (let i = 0; i < 100; i++) {
-    const value = await read();
-    if (done(value)) return value;
-    await new Promise<void>(resolve => setImmediate(resolve));
+  const deadline = Date.now() + 5_000;
+  let value = await read();
+  while (!done(value)) {
+    if (Date.now() >= deadline) break;
+    await new Promise<void>(resolve => setTimeout(resolve, 25));
+    value = await read();
   }
+  if (done(value)) return value;
   throw new Error("Timed out waiting for backend job");
 }
 
@@ -46,7 +49,7 @@ describe("studio service storage and public command boundary", () => {
       await expect(service.call("recipes.save", { recipe: { ...first, notes: "stale" }, expectedVersion: 1 })).rejects.toMatchObject({ data: { code: "VERSION_CONFLICT" } });
       expect((await service.call("recipes.versions", { id: first.id })).map(version => version.version)).toEqual([2, 1]);
     } finally {
-      service.close();
+      await service.close();
       await rm(dataDir, { recursive: true, force: true });
     }
   });
@@ -68,7 +71,7 @@ describe("studio service storage and public command boundary", () => {
       expect((await service.call("presets.list", { query: "My scene" })).items).toHaveLength(1);
       await expect(service.call("presets.save", { preset: { type: "scene", name: "Mismatched", block: { type: "lighting", tags: ["soft"], text: "" }, tags: [], notes: "" } })).rejects.toMatchObject({ data: { code: "VALIDATION_FAILED" } });
     } finally {
-      service.close();
+      await service.close();
       await rm(dataDir, { recursive: true, force: true });
     }
   });
@@ -92,7 +95,7 @@ describe("studio service storage and public command boundary", () => {
       await expect(service.call("recipes.save", { recipe: makeRecipe("Denied", []) }, readOnly)).rejects.toMatchObject({ data: { code: "PERMISSION_DENIED" } });
       await expect(service.call("status.read", {}, { source: "mcp" })).rejects.toMatchObject({ data: { code: "PERMISSION_DENIED" } });
     } finally {
-      service.close();
+      await service.close();
       await rm(dataDir, { recursive: true, force: true });
     }
   });
@@ -105,7 +108,7 @@ describe("studio service storage and public command boundary", () => {
       await expect(service.call("recipes.save", { recipe: { ...recipe, source: "private-workflow:one" } })).rejects.toMatchObject({ data: { code: "VALIDATION_FAILED" } });
       await expect(service.call("recipe.compose", { recipe: { ...recipe, source: "external-queue:one" } })).rejects.toMatchObject({ data: { code: "VALIDATION_FAILED" } });
     } finally {
-      service.close();
+      await service.close();
       await rm(dataDir, { recursive: true, force: true });
     }
   });
@@ -117,8 +120,7 @@ describe("studio service storage and public command boundary", () => {
     try {
       await first.call("settings.update", { outputDirectory: outputDir });
     } finally {
-      first.close();
-      await new Promise<void>(resolve => setImmediate(resolve));
+      await first.close();
     }
     const service = createStudioService({ dataDir, getToken: tokenless, dryRun: true });
     try {
@@ -131,7 +133,7 @@ describe("studio service storage and public command boundary", () => {
       expect(gallery.url).toBe(`recipe-studio://app/images/${gallery.id}`);
       await expect(service.readImage(gallery.id)).resolves.toEqual(expect.any(Uint8Array));
     } finally {
-      service.close();
+      await service.close();
       await rm(dataDir, { recursive: true, force: true });
       await rm(outputDir, { recursive: true, force: true });
     }
@@ -164,7 +166,7 @@ describe("studio service storage and public command boundary", () => {
       await waitFor(() => service.call("generation.status", { id: job.id }), value => ["completed", "cancelled", "failed"].includes(value.state));
     } finally {
       unsubscribe();
-      service.close();
+      await service.close();
       await rm(dataDir, { recursive: true, force: true });
     }
   });
@@ -202,7 +204,7 @@ describe("studio service storage and public command boundary", () => {
       await expect(service.call("generation.start", { planId: anlasLimited.id, requestId: "anlas-budget" }, { source: "mcp", connection: limitedConnection }))
         .rejects.toMatchObject({ data: { code: "APPROVAL_REQUIRED" } });
     } finally {
-      service.close();
+      await service.close();
       await rm(dataDir, { recursive: true, force: true });
     }
   });
@@ -224,7 +226,7 @@ describe("studio service storage and public command boundary", () => {
       await service.call("gallery.delete", { id: item.id });
       await expect(service.readImage(item.id)).rejects.toBeDefined();
     } finally {
-      service.close();
+      await service.close();
       await rm(dataDir, { recursive: true, force: true });
       await rm(firstOutput, { recursive: true, force: true });
       await rm(secondOutput, { recursive: true, force: true });
@@ -268,7 +270,7 @@ describe("generation service", () => {
       const approved = await service.call("generation.approve", { planId: plan.id }, { source: "ui" });
       expect(approved.approved).toBe(true);
     } finally {
-      service.close();
+      await service.close();
       await rm(dataDir, { recursive: true, force: true });
     }
   });
@@ -284,7 +286,7 @@ describe("generation service", () => {
       await expect(service.call("generation.approve", { planId: plan.id }, { source: "ui" })).rejects.toMatchObject({ data: { code: "PLAN_EXPIRED" } });
       await expect(service.call("generation.start", { planId: plan.id, requestId: "expired-plan" }, { source: "ui" })).rejects.toMatchObject({ data: { code: "APPROVAL_REQUIRED" } });
     } finally {
-      service.close();
+      await service.close();
       vi.useRealTimers();
       await rm(dataDir, { recursive: true, force: true });
     }
@@ -302,7 +304,7 @@ describe("generation service", () => {
       await expect(service.call("generation.start", { planId: plan.id, requestId: "unknown-quote" }, { source: "ui" })).rejects.toMatchObject({ data: { code: "COST_UNKNOWN" } });
       expect(fetchImpl).toHaveBeenCalledTimes(2);
     } finally {
-      service.close();
+      await service.close();
       await rm(dataDir, { recursive: true, force: true });
     }
   });
@@ -340,7 +342,7 @@ describe("generation service", () => {
       await expect(service.readImage(rated.id)).resolves.toEqual(expect.any(Uint8Array));
       expect((await service.call("gallery.delete", { id: rated.id })).deleted).toBe(true);
     } finally {
-      service.close();
+      await service.close();
       await rm(dataDir, { recursive: true, force: true });
       await rm(outputDir, { recursive: true, force: true });
     }
@@ -377,7 +379,7 @@ describe("generation service", () => {
       await expect(service.call("generation.status", { id: secondJob.id })).resolves.toMatchObject({ state: "cancelled", completed: 0 });
       expect(generationCalls).toBe(1);
     } finally {
-      service.close();
+      await service.close();
       await rm(dataDir, { recursive: true, force: true });
     }
   });
