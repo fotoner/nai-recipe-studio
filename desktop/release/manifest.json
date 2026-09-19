@@ -1,0 +1,13 @@
+{
+  "product": "NAI Recipe Studio",
+  "appVersion": "0.1.0",
+  "protocolVersion": 1,
+  "skillVersion": "0.1.0",
+  "platforms": {
+    "macOS": ["arm64", "x64"],
+    "Windows": ["x64"]
+  },
+  "defaultLanguage": "system",
+  "languages": ["ko", "ja", "en"],
+  "defaultData": "generic-palette-only"
+}

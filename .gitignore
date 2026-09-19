@@ -3,7 +3,7 @@ runtime/
 /desktop/assets/icon.png
 /desktop/assets/icon.ico
 dist/
-release/
+/release/
 coverage/
 playwright-report/
 test-results/

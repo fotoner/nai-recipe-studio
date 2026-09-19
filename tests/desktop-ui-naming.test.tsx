@@ -44,7 +44,7 @@ describe("recipe editor source naming", () => {
     expect(screen.queryByRole("button", { name: "Characters" })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Prompt · Lint" }));
-    fireEvent.click(screen.getByRole("tab", { name: "Lint" }));
+    fireEvent.click(await screen.findByRole("tab", { name: /^Lint(?:\s*\d+)?$/ }));
     expect(await screen.findByText("warn 1")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Fix all (1)" }));
     await waitFor(() => expect(calls).toContainEqual(["recipe.validate", expect.objectContaining({ fixes: ["STYLE_MINUS"] })]));
