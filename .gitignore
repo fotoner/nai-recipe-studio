@@ -1,0 +1,16 @@
+node_modules/
+runtime/
+/desktop/assets/icon.png
+/desktop/assets/icon.ico
+dist/
+release/
+coverage/
+playwright-report/
+test-results/
+*.tsbuildinfo
+.env
+.env.*
+*.db
+*.db-*
+*.sqlite*
+.DS_Store

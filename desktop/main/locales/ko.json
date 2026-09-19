@@ -1,0 +1,10 @@
+{
+  "importRecipe": "레시피 가져오기",
+  "exportRecipe": "레시피 내보내기",
+  "recipeJson": "레시피 JSON",
+  "chooseOutput": "이미지 저장 폴더 선택",
+  "closeTitle": "창을 닫을까요?",
+  "closeDescription": "저장하지 않은 변경 사항이 있거나 작업이 진행 중입니다. 창을 닫으시겠어요?",
+  "keepOpen": "계속 작업",
+  "discardAndClose": "닫기"
+}

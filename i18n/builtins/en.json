@@ -1,0 +1,35 @@
+{
+  "text-speech": {
+    "name": "Speech",
+    "notes": "Editable text starter."
+  },
+  "composition-upper-body": {
+    "name": "Upper body"
+  },
+  "composition-full-body": {
+    "name": "Full body"
+  },
+  "expression-smile": {
+    "name": "Smile"
+  },
+  "outfit-casual": {
+    "name": "Casual clothes"
+  },
+  "scene-simple": {
+    "name": "Simple background"
+  },
+  "lighting-soft": {
+    "name": "Soft lighting"
+  },
+  "motif-magic": {
+    "name": "Magic"
+  },
+  "negative-default": {
+    "name": "Default negative",
+    "notes": "General negative prompt starter."
+  },
+  "settings-default": {
+    "name": "Default settings",
+    "notes": "Neutral V5 settings."
+  }
+}

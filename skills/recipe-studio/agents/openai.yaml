@@ -1,0 +1,7 @@
+interface:
+  display_name: "NAI Recipe Studio"
+  short_description: "Edit, validate, and generate recipe images"
+  default_prompt: "Use $recipe-studio to inspect or update a NAI Recipe Studio recipe."
+
+policy:
+  allow_implicit_invocation: true

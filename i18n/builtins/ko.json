@@ -1,0 +1,35 @@
+{
+  "text-speech": {
+    "name": "말풍선",
+    "notes": "수정해서 쓰는 텍스트 블록입니다."
+  },
+  "composition-upper-body": {
+    "name": "상반신"
+  },
+  "composition-full-body": {
+    "name": "전신"
+  },
+  "expression-smile": {
+    "name": "미소"
+  },
+  "outfit-casual": {
+    "name": "캐주얼 의상"
+  },
+  "scene-simple": {
+    "name": "단순한 배경"
+  },
+  "lighting-soft": {
+    "name": "부드러운 조명"
+  },
+  "motif-magic": {
+    "name": "마법"
+  },
+  "negative-default": {
+    "name": "기본 네거티브",
+    "notes": "일반적인 네거티브 프롬프트의 시작점입니다."
+  },
+  "settings-default": {
+    "name": "기본 설정",
+    "notes": "V5 기본 생성 설정입니다."
+  }
+}

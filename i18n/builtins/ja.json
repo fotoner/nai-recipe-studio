@@ -1,0 +1,35 @@
+{
+  "text-speech": {
+    "name": "吹き出し",
+    "notes": "編集して使うテキストブロックです。"
+  },
+  "composition-upper-body": {
+    "name": "上半身"
+  },
+  "composition-full-body": {
+    "name": "全身"
+  },
+  "expression-smile": {
+    "name": "笑顔"
+  },
+  "outfit-casual": {
+    "name": "カジュアルな服"
+  },
+  "scene-simple": {
+    "name": "シンプルな背景"
+  },
+  "lighting-soft": {
+    "name": "柔らかい光"
+  },
+  "motif-magic": {
+    "name": "魔法"
+  },
+  "negative-default": {
+    "name": "標準ネガティブ",
+    "notes": "一般的なネガティブプロンプトのひな形です。"
+  },
+  "settings-default": {
+    "name": "標準設定",
+    "notes": "V5の基本生成設定です。"
+  }
+}

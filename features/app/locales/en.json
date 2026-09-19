@@ -1,0 +1,12 @@
+{
+  "usage": "Overall usage",
+  "refresh": "Refresh account usage",
+  "opus": "Opus usage",
+  "consumed": "About {{count}} images consumed",
+  "consumedHint": "This is an estimate that converts 1% usage to about 17 images. It is not a cumulative image count and varies with settings and usage recovery.",
+  "balance": "Anlas balance",
+  "loading": "Checking account…",
+  "unavailable": "Could not load account usage.",
+  "offline": "Connect an API token to check usage.",
+  "stale": "Refresh failed · showing previous values"
+}

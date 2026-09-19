@@ -1,0 +1,10 @@
+{
+  "importRecipe": "Import recipe",
+  "exportRecipe": "Export recipe",
+  "recipeJson": "Recipe JSON",
+  "chooseOutput": "Choose image output folder",
+  "closeTitle": "Close the window?",
+  "closeDescription": "There are unsaved changes or work in progress. Do you want to close this window?",
+  "keepOpen": "Keep working",
+  "discardAndClose": "Close window"
+}

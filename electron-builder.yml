@@ -1,0 +1,44 @@
+appId: com.fotoner.nai-recipe-studio
+productName: NAI Recipe Studio
+directories:
+  output: release
+files:
+  - dist/main/**
+  - dist/preload/**
+  - dist/renderer/**
+  - package.json
+asar: true
+asarUnpack:
+  - node_modules/better-sqlite3/**
+extraResources:
+  - from: runtime/mcp
+    to: mcp
+  - from: skills/recipe-studio
+    to: skills/recipe-studio
+  - from: desktop/release/manifest.json
+    to: manifest.json
+  - from: desktop/release/licenses
+    to: licenses
+npmRebuild: true
+publish: null
+mac:
+  identity: "-"
+  entitlements: desktop/release/entitlements.mac.plist
+  entitlementsInherit: desktop/release/entitlements.mac.plist
+  icon: desktop/assets/icon.png
+  category: public.app-category.graphics-design
+  hardenedRuntime: true
+  gatekeeperAssess: false
+  target:
+    - dmg
+    - zip
+win:
+  icon: desktop/assets/icon.ico
+  target:
+    - target: nsis
+      arch: [x64]
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false
