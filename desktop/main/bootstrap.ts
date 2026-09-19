@@ -182,7 +182,9 @@ export function createDesktopApplication(options: DesktopApplicationOptions) {
           // Shutdown must still release the app even if a transport or store
           // reports an error after its resources have been closed.
         } finally {
-          app.quit();
+          // Electron keeps its native quitting flag set during will-quit dispatch;
+          // re-enter quit on the next loop turn after the event has returned.
+          setImmediate(() => app.quit());
         }
       })();
     });
