@@ -6,6 +6,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { ConnectionStore } from "../../desktop/main/connections";
 import { getProfilePaths } from "../../desktop/main/paths";
+import { quitApplication } from "./lifecycle";
 
 let application: ElectronApplication;
 let profile: string;
@@ -69,7 +70,7 @@ test("bundled MCP helper enforces connection permissions and revocation", async 
 });
 
 test.afterEach(async () => {
-  await application?.close();
+  if (application) await quitApplication(application);
   if (profile) await rm(profile, { recursive: true, force: true });
 });
 
@@ -173,7 +174,7 @@ test("Korean navigation and editor retain the original product terminology", asy
 });
 
 test("development loads the live Vite renderer with working IPC and Tailwind", async () => {
-  await application.close();
+  await quitApplication(application);
   const { createServer } = await import("vite");
   const { default: react } = await import("@vitejs/plugin-react");
   const { default: tailwind } = await import("@tailwindcss/vite");

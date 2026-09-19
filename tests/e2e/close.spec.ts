@@ -2,6 +2,7 @@ import { _electron, expect, test, type ElectronApplication, type Page } from "@p
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { quitApplication } from "./lifecycle";
 
 let application: ElectronApplication | undefined;
 let profile: string | undefined;
@@ -70,7 +71,7 @@ test("clean application close drains the app and resolves", async () => {
   const page = await launchFreshApp();
   await page.waitForLoadState("domcontentloaded");
   await expect(page.getByRole("button", { name: "Recipes", exact: true })).toBeVisible();
-  await application!.close();
+  await quitApplication(application!);
   application = undefined;
 });
 
@@ -79,7 +80,7 @@ test.afterEach(async () => {
     try {
       await application.evaluate(({ dialog }) => { dialog.showMessageBoxSync = () => 1; });
     } catch { /* the app may already have exited */ }
-    try { await application.close(); } catch { /* preserve the test result */ }
+    await quitApplication(application);
   }
   application = undefined;
   if (profile) await rm(profile, { recursive: true, force: true });
