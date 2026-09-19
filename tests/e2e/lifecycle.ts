@@ -8,6 +8,16 @@ export async function quitApplication(application: ElectronApplication) {
     const record = (chunk: Buffer) => { diagnostics.push(chunk.toString()); };
     child.stderr?.on("data", record);
     await application.evaluate(({ app }) => {
+      const net = process.getBuiltinModule("net") as typeof import("node:net");
+      const close = net.Server.prototype.close;
+      net.Server.prototype.close = function (callback) {
+        process.stderr.write(`[native-quit] server.close listening=${this.listening}\n`);
+        this.once("close", () => process.stderr.write("[native-quit] server close event\n"));
+        return close.call(this, error => {
+          process.stderr.write(`[native-quit] server close callback ${error?.message ?? "ok"}\n`);
+          callback?.(error);
+        });
+      };
       for (const event of ["before-quit", "will-quit", "quit"]) {
         app.on(event as "quit", () => process.stderr.write(`[native-quit] ${event}\n`));
       }
