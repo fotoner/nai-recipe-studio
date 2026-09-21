@@ -89,11 +89,12 @@ describe("standalone generation flow", () => {
     const { client, call } = fakeClient({ recipePage: offset => offset === 0 ? { items: firstPage, total: 201 } : { items: [lastRecipe], total: 201 } });
     render(<GenerationFeature client={client} onOpenGallery={vi.fn()} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Tail recipe select" }));
+    // Role queries over 201 rows exceed the default limits on slow CI runners.
+    fireEvent.click(await screen.findByRole("button", { name: "Tail recipe select" }, { timeout: 15000 }));
 
     await waitFor(() => expect(call).toHaveBeenCalledWith("recipes.list", { limit: 200, offset: 200 }));
     expect(call).toHaveBeenCalledWith("generation.prepare", expect.objectContaining({ recipe: expect.objectContaining({ id: 201 }), count: 1 }));
-  });
+  }, 30000);
 
   it("shows MCP plans for approval but hides locally prepared UI plans", async () => {
     await changeLanguage("en");

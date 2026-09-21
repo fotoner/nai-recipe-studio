@@ -159,7 +159,8 @@ describe("per-target packaging runtime", () => {
   });
 
   it("declares Linux packages and space-free artifact names for release uploads", async () => {
-    const config = await readFile(new URL("../electron-builder.yml", import.meta.url), "utf8");
+    // Windows checkouts may convert line endings.
+    const config = (await readFile(new URL("../electron-builder.yml", import.meta.url), "utf8")).replaceAll("\r\n", "\n");
     const manifest = JSON.parse(await readFile(new URL("../desktop/release/manifest.json", import.meta.url), "utf8")) as { platforms: Record<string, string[]> };
     expect(config).toMatch(/^linux:\n(?: {2}.*\n)*? {4}- target: AppImage\n/m);
     expect(config).toMatch(/^linux:\n(?: {2}.*\n)*? {4}- target: deb\n/m);

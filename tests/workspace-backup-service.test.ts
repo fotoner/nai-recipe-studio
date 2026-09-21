@@ -12,6 +12,13 @@ import type { Recipe } from "../lib/schema";
 
 const PNG = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 1, 2, 3]);
 
+// Windows cannot delete a database file while a connection still holds it open.
+const openStores: StudioSqliteStore[] = [];
+async function cleanup(root: string) {
+  for (const store of openStores.splice(0)) store.close();
+  await rm(root, { recursive: true, force: true });
+}
+
 function character(tag: string, notes: string) {
   return { tag, series: "Fixture series", display_name: tag, gender: "girl" as const, age_flag: "adult" as const, locked: false, fixed_traits: ["blue eyes"], default_x: 0.4, default_y: 0.5, notes };
 }
@@ -38,6 +45,7 @@ async function workspace(root: string, options: { source?: boolean; active?: () 
   const dataDir = path.join(root, "data");
   const outputDir = path.join(root, "output");
   const store = new StudioSqliteStore(dataDir);
+  openStores.push(store);
   const release = vi.fn();
   const readImage = async (id: number) => {
     const file = store.getGenerationFile(id);
@@ -98,7 +106,7 @@ describe("workspace backup merge service", () => {
       expect(JSON.stringify(snapshot)).not.toContain("connections");
       expect(JSON.stringify(snapshot)).not.toContain("token");
       expect(JSON.stringify(snapshot)).not.toContain("source.png");
-    } finally { await rm(root, { recursive: true, force: true }); }
+    } finally { await cleanup(root); }
   });
 
   it("rejects malformed persisted JSON instead of exporting fallback-empty workspace data", async () => {
@@ -112,7 +120,7 @@ describe("workspace backup merge service", () => {
       try { source.service.exportSnapshot(); } catch (cause) { failure = cause; }
       expect(failure).toMatchObject({ data: { code: "INVALID_BACKUP_ARCHIVE" } });
       db.prepare("UPDATE recipes SET blocks=? WHERE id=?").run(select.blocks, source.recipe.id);
-    } finally { await rm(root, { recursive: true, force: true }); }
+    } finally { await cleanup(root); }
   });
 
   it("merges with remapped relationships, preserves target conflicts, and records the same archive only once", async () => {
@@ -148,7 +156,7 @@ describe("workspace backup merge service", () => {
       const repeated = await target.service.restore(snapshot, { backupId: archiveId, expectedRevision: secondPreview.revision, images, readAsset: async () => PNG });
       expect(repeated.alreadyImported).toBe(true);
       expect(target.store.listGallery({ limit: 200 }).total).toBe(countsBefore);
-    } finally { await rm(root, { recursive: true, force: true }); }
+    } finally { await cleanup(root); }
   });
 
   it("does not map an active imported character to a matching soft-deleted local character", async () => {
@@ -171,7 +179,7 @@ describe("workspace backup merge service", () => {
       const importedRecipe = target.store.getRecipe(1);
       const cast = importedRecipe.blocks.find(block => block.type === "cast");
       expect(cast?.type === "cast" && cast.members[0]?.character_id).toBe(activeCharacters[0]?.id);
-    } finally { await rm(root, { recursive: true, force: true }); }
+    } finally { await cleanup(root); }
   });
 
   it("recognizes a recipe as duplicate only when its mapped version history also matches", async () => {
@@ -193,7 +201,7 @@ describe("workspace backup merge service", () => {
       expect(result.skipped).toMatchObject({ recipes: 1, recipeVersions: 2 });
       expect(target.store.listRecipes({ limit: 100 }).total).toBe(1);
       expect(target.store.listRecipeVersions(targetRecipe.id)).toHaveLength(2);
-    } finally { await rm(root, { recursive: true, force: true }); }
+    } finally { await cleanup(root); }
   });
 
   it("remaps preset references that point forward to a later preset record", async () => {
@@ -215,7 +223,7 @@ describe("workspace backup merge service", () => {
       const parent = presets.find(preset => preset.name === "Forward parent");
       const child = presets.find(preset => preset.name === "Forward child");
       expect(parent?.block).toMatchObject({ preset_id: child?.id });
-    } finally { await rm(root, { recursive: true, force: true }); }
+    } finally { await cleanup(root); }
   });
 
   it("freezes the imported source character when a same-tag local character has different prompt traits", async () => {
@@ -239,7 +247,7 @@ describe("workspace backup merge service", () => {
       const cast = imported.blocks.find(block => block.type === "cast");
       expect(cast?.type === "cast" && cast.members[0]?.character_snapshot).toMatchObject({ id: localCharacter.id, fixed_traits: ["blue eyes"] });
       expect(target.store.getCharacter(localCharacter.id).fixed_traits).toEqual(["red hair"]);
-    } finally { await rm(root, { recursive: true, force: true }); }
+    } finally { await cleanup(root); }
   });
 
   it("does not deduplicate an orphan gallery row when the incoming linked recipe is still new", async () => {
@@ -270,7 +278,7 @@ describe("workspace backup merge service", () => {
       expect(imported.recipe_id).not.toBeNull();
       expect(imported.recipe_id).toBe(target.store.getRecipe(1).id);
       expect(target.store.listGallery({ limit: 10 }).total).toBe(2);
-    } finally { await rm(root, { recursive: true, force: true }); }
+    } finally { await cleanup(root); }
   });
 
   it("does not synthesize generation-time character snapshots during restore", async () => {
@@ -298,7 +306,7 @@ describe("workspace backup merge service", () => {
       const galleryCast = importedGallery.recipe.blocks.find(block => block.type === "cast");
       expect(recipeCast?.type === "cast" && recipeCast.members[0]?.character_snapshot).toBeTruthy();
       expect(galleryCast?.type === "cast" && galleryCast.members[0]?.character_snapshot).toBeUndefined();
-    } finally { await rm(root, { recursive: true, force: true }); }
+    } finally { await cleanup(root); }
   });
 
   it("rejects a stale preview after the target workspace changes", async () => {
@@ -315,7 +323,7 @@ describe("workspace backup merge service", () => {
         .rejects.toMatchObject({ data: { code: "BACKUP_PREVIEW_STALE" } });
       expect(target.store.listRecipes({ limit: 100 }).items.map(item => item.name)).toContain("Changed after preview");
       expect(target.store.listRecipes({ limit: 100 }).items.map(item => item.name)).not.toContain("Portable recipe");
-    } finally { await rm(root, { recursive: true, force: true }); }
+    } finally { await cleanup(root); }
   });
 
   it("rolls back database rows and copied image files when the database transaction fails", async () => {
@@ -335,7 +343,7 @@ describe("workspace backup merge service", () => {
       expect(await readdir(path.join(target.outputDir, "images", "workspace-imports")).catch(() => [])).toEqual([]);
       const retry = await target.service.inspect(snapshot, { backupId: "c".repeat(64), images });
       expect(retry.alreadyImported).toBe(false);
-    } finally { await rm(root, { recursive: true, force: true }); }
+    } finally { await cleanup(root); }
   });
 
   it("refuses a restore while generation work is active and always releases its exclusive lock", async () => {
@@ -353,6 +361,6 @@ describe("workspace backup merge service", () => {
         .rejects.toMatchObject({ data: { code: "WORKSPACE_BUSY" } });
       expect(target.release).toHaveBeenCalledTimes(1);
       expect(target.store.listRecipes({ limit: 100 }).items.map(item => item.name)).not.toContain("Portable recipe");
-    } finally { await rm(root, { recursive: true, force: true }); }
+    } finally { await cleanup(root); }
   });
 });
