@@ -6,6 +6,8 @@ export interface SafeStorageLike {
   isEncryptionAvailable(): boolean;
   encryptString(value: string): Buffer;
   decryptString(value: Buffer): string;
+  /** Linux only. "basic_text" means no keyring is available and the key is hardcoded. */
+  getSelectedStorageBackend?(): string;
 }
 
 type CredentialEnvelope = { version: 1; values: Record<string, string> };
@@ -37,7 +39,7 @@ export class CredentialStore {
 
   async set(name: string, value: string): Promise<void> {
     if (!name || !value) throw new PlatformError("VALIDATION_FAILED", "A credential name and value are required.");
-    if (!this.safeStorage.isEncryptionAvailable()) {
+    if (!this.safeStorage.isEncryptionAvailable() || this.safeStorage.getSelectedStorageBackend?.() === "basic_text") {
       throw new PlatformError("CREDENTIAL_PROTECTION_UNAVAILABLE", "OS credential protection is unavailable; the token was not saved.", {
         action: "use-this-token-for-the-current-session-only",
       });

@@ -76,6 +76,24 @@ describe("desktop profile and platform boundaries", () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  it("treats the Linux basic_text backend as unprotected instead of saving a weakly obfuscated token", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "recipe-studio-credentials-"));
+    const file = path.join(root, "credentials.json");
+    const codec = {
+      isEncryptionAvailable: () => true,
+      encryptString: (value: string) => Buffer.from(value, "utf8").reverse(),
+      decryptString: (value: Buffer) => Buffer.from(value).reverse().toString("utf8"),
+    };
+    const weak = new CredentialStore(file, { ...codec, getSelectedStorageBackend: () => "basic_text" });
+    await expect(weak.set("novelai", "token-fixture")).rejects.toMatchObject({ code: "CREDENTIAL_PROTECTION_UNAVAILABLE" });
+    await expect(readFile(file, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+
+    const keyring = new CredentialStore(file, { ...codec, getSelectedStorageBackend: () => "gnome_libsecret" });
+    await keyring.set("novelai", "token-fixture");
+    expect(await keyring.get("novelai")).toBe("token-fixture");
+    await rm(root, { recursive: true, force: true });
+  });
+
   it("strips textual PNG metadata while preserving image chunks", () => {
     const fixture = Buffer.concat([
       PNG_SIGNATURE,
