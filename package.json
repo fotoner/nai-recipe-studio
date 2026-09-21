@@ -6,7 +6,7 @@
   "main": "dist/main/index.js",
   "scripts": {
     "dev": "pnpm build:mcp && pnpm bundle:runtime && electron-vite dev",
-    "build": "pnpm build:icons && electron-vite build && pnpm build:mcp && pnpm audit:dist",
+    "build": "pnpm build:icons && pnpm build:notices && electron-vite build && pnpm build:mcp && pnpm audit:dist",
     "typecheck": "tsc --noEmit",
     "lint": "eslint .",
     "test": "vitest run",
@@ -19,7 +19,8 @@
     "build:mcp": "node scripts/build-mcp.mjs",
     "bundle:runtime": "node scripts/bundle-runtime.mjs",
     "audit:dist": "tsx scripts/release-audit.ts",
-    "build:icons": "node scripts/build-icons.mjs"
+    "build:icons": "node scripts/build-icons.mjs",
+    "build:notices": "node scripts/build-notices.mjs"
   },
   "dependencies": {
     "better-sqlite3": "^13.0.3"
@@ -77,5 +78,10 @@
     ]
   },
   "author": "fotoner",
-  "license": "UNLICENSED"
+  "homepage": "https://github.com/fotoner/nai-recipe-studio",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fotoner/nai-recipe-studio.git"
+  },
+  "license": "MIT"
 }

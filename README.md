@@ -52,3 +52,7 @@ NovelAI의 **User Settings → Account → Get Persistent API Token**에서 토�
 토큰은 운영체제 보안 저장 기능을 통해 암호화하고 renderer와 MCP에는 조회 기능을 제공하지 않습니다. 채팅이나 레시피 JSON에 토큰을 넣지 마세요. 생성 이미지와 메타데이터는 앱 프로필 및 사용자가 고른 출력 폴더에 저장됩니다. 공유용 이미지 내보내기는 기본적으로 프롬프트 메타데이터를 제거합니다.
 
 자세한 개발 구조는 [아키텍처](docs/architecture.md), 검증 방법과 한계는 [TESTING.md](TESTING.md)를 참조하세요.
+
+## 라이선스
+
+[MIT](LICENSE). 배포 패키지의 `licenses` 폴더에는 이 라이선스와 함께 포함된 오픈소스의 고지문(`THIRD-PARTY-NOTICES.txt`, 빌드 시 생성)이 들어 있습니다. NovelAI는 Anlatan의 상표이며 이 프로젝트는 NovelAI와 제휴하지 않았습니다.

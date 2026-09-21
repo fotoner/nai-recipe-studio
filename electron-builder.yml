@@ -17,6 +17,8 @@ extraResources:
     to: manifest.json
   - from: desktop/release/licenses
     to: licenses
+  - from: LICENSE
+    to: licenses/LICENSE
 npmRebuild: true
 afterPack: ./scripts/after-pack.cjs
 publish: null

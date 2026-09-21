@@ -2,6 +2,7 @@ node_modules/
 runtime/
 /desktop/assets/icon.png
 /desktop/assets/icon.ico
+/desktop/release/licenses/THIRD-PARTY-NOTICES.txt
 dist/
 /release/
 coverage/
