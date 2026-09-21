@@ -1,3 +1,4 @@
+import { resolveMemberCharacter } from "../core/recipe/characters";
 /**
  * Blocks -> NovelAI V5 payload strings.
  *
@@ -88,7 +89,7 @@ export function composeParts(recipe: Recipe, characters: Character[]): ComposePa
   const cast = findBlock(recipe, "cast");
   const members = cast?.members ?? [];
   const byId = new Map(characters.map(c => [c.id ?? -1, c]));
-  const chars = members.map(m => byId.get(m.character_id));
+  const chars = members.map(m => resolveMemberCharacter(m, byId.get(m.character_id)));
   const rating = ratingOf(recipe);
   const settings = settingsOf(recipe);
   const style = findBlock(recipe, "style");

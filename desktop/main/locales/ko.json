@@ -6,5 +6,7 @@
   "closeTitle": "창을 닫을까요?",
   "closeDescription": "저장하지 않은 변경 사항이 있거나 작업이 진행 중입니다. 창을 닫으시겠어요?",
   "keepOpen": "계속 작업",
-  "discardAndClose": "닫기"
+  "discardAndClose": "닫기",
+  "exportWorkspaceBackup": "작업공간 백업 내보내기",
+  "importWorkspaceBackup": "작업공간 백업 검토"
 }

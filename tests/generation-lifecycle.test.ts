@@ -33,7 +33,7 @@ it("quotes and generates each image using the same current credential", async ()
   const service = createStudioService({ dataDir, getToken: async () => token, fetch: fetchImpl });
   try {
     const plan = await service.call("generation.prepare", { recipe, count: 2 });
-    await service.call("generation.approve", { planId: plan.id }, { source: "ui" });
+    await service.call("generation.approve", { planId: plan.id, allowPaid: true }, { source: "ui" });
     const job = await service.call("generation.start", { planId: plan.id, requestId: "credential-switch" });
     await until(() => service.call("generation.status", { id: job.id }), job => job.state === "completed");
     expect(imageTokens).toEqual(["Bearer synthetic-a", "Bearer synthetic-b"]);
@@ -75,7 +75,7 @@ it("revoking a connection during one image prevents the next image", async () =>
   try {
     const context = { source: "mcp" as const, connection };
     const plan = await service.call("generation.prepare", { recipe, count: 2 }, context);
-    await service.call("generation.approve", { planId: plan.id }, { source: "ui" });
+    expect(plan.approved).toBe(true);
     const job = await service.call("generation.start", { planId: plan.id, requestId: "revoked-queue" }, context);
     await until(async () => requests, requests => requests === 1);
     current = null; finish();

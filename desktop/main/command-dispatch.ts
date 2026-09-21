@@ -16,14 +16,18 @@ export type StudioService = StudioClient & {
 };
 
 const READ_COMMANDS = new Set<Command>([
+  "recipes.proposals.list", "recipes.proposals.create",
   "status.read", "recipes.list", "recipes.get", "recipes.versions", "characters.list", "presets.list", "recipe.compose", "recipe.validate",
   "generation.pending", "generation.status", "generation.list", "gallery.list", "gallery.get", "settings.get", "ai.connections.list", "setup.inspect",
 ]);
 const WRITE_COMMANDS = new Set<Command>([
+  "recipes.proposals.create",
   "recipes.save", "recipes.duplicate", "recipes.delete", "characters.save", "characters.delete", "presets.save", "presets.delete",
   "gallery.rate", "gallery.delete", "settings.update", "ai.connections.create", "ai.connections.revoke", "setup.install", "setup.uninstall",
 ]);
 const UI_ONLY_COMMANDS = new Set<Command>([
+  "workspace.backup.export", "workspace.backup.inspect", "workspace.backup.restore",
+  "recipes.proposals.apply", "recipes.proposals.undo",
   "generation.pending", "generation.approve", "credentials.set", "credentials.clear", "credentials.test", "files.importRecipe", "files.exportRecipe", "files.chooseOutput", "files.openOutput", "gallery.export", "help.open", "setup.install", "setup.uninstall",
 ]);
 const IMAGE_COMMANDS = new Set<Command>(["gallery.export"]);

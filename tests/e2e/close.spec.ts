@@ -2,7 +2,7 @@ import { _electron, expect, test, type ElectronApplication, type Page } from "@p
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { quitApplication } from "./lifecycle";
+import { keepTestAppInBackground, quitApplication } from "./lifecycle";
 
 let application: ElectronApplication | undefined;
 let profile: string | undefined;
@@ -13,6 +13,7 @@ async function launchFreshApp() {
     args: [path.resolve("dist/main/index.js"), "--lang=en", "--disable-gpu"],
     env: { ...process.env, NAI_STUDIO_PROFILE: profile, NAI_STUDIO_DRY_RUN: "1", NAI_STUDIO_CLIENT_HOME: path.join(profile, "client-home") },
   });
+  await keepTestAppInBackground(application);
   return application.firstWindow();
 }
 

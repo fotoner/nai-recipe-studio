@@ -107,6 +107,7 @@ export type RpcSocketAddress = string | { port: number; host?: string };
 
 export class RpcClient {
   private socket: net.Socket | null = null;
+  private connecting: Promise<void> | null = null;
   private buffer = "";
   private nextId = 1;
   private readonly pending = new Map<string | number, { resolve: (value: unknown) => void; reject: (reason: unknown) => void }>();
@@ -114,51 +115,74 @@ export class RpcClient {
   constructor(private readonly address: RpcSocketAddress, private readonly token: string) {}
 
   async connect() {
-    if (this.socket) return;
+    if (this.connecting) return this.connecting;
+    if (this.socket && !this.socket.destroyed) return;
     const socket = openSocket(this.address);
     this.socket = socket;
+    this.buffer = "";
     socket.setEncoding("utf8");
-    socket.on("data", value => this.receive(String(value)));
-    socket.on("error", error => this.fail(error));
-    socket.on("close", () => this.fail(new PlatformError("APP_NOT_RUNNING", "NAI Recipe Studio is not running.")));
-    await new Promise<void>((resolve, reject) => {
-      const onError = (error: Error) => { socket.off("connect", onConnect); reject(error); };
-      const onConnect = () => { socket.off("error", onError); resolve(); };
-      socket.once("connect", onConnect);
-      socket.once("error", onError);
-    });
-    const id = this.nextId++;
-    await new Promise<void>((resolve, reject) => {
-      this.pending.set(id, { resolve: () => resolve(), reject });
-      socket.write(JSON.stringify({ id, type: "hello", version: RPC_PROTOCOL_VERSION, token: this.token }) + "\n");
-    });
+    socket.on("data", value => { if (this.socket === socket) this.receive(String(value), socket); });
+    socket.on("error", error => this.fail(error, socket));
+    socket.on("close", () => this.fail(new PlatformError("APP_NOT_RUNNING", "NAI Recipe Studio is not running."), socket));
+    const connecting = this.connectAndAuthenticate(socket);
+    this.connecting = connecting;
+    try {
+      await connecting;
+    } catch (error) {
+      this.fail(error, socket);
+      throw error;
+    } finally {
+      if (this.connecting === connecting) this.connecting = null;
+    }
   }
 
   async request(method: string, params?: unknown): Promise<unknown> {
-    await this.connectIfNeeded(method);
+    await this.connectIfNeeded();
     const id = this.nextId++;
     const message = method === "__hello__" ? params : { id, method, params };
     const body = JSON.stringify(message) + "\n";
     if (Buffer.byteLength(body) > MAX_RPC_LINE_BYTES) throw new PlatformError("REQUEST_TOO_LARGE");
+    const socket = this.socket;
+    if (!socket || socket.destroyed || !socket.writable) throw new PlatformError("APP_NOT_RUNNING", "NAI Recipe Studio is not running.");
     return new Promise((resolve, reject) => {
-      this.pending.set(method === "__hello__" ? id : id, { resolve, reject });
-      this.socket!.write(body);
+      this.pending.set(id, { resolve, reject });
+      try { socket.write(body); }
+      catch (error) { this.fail(error, socket); }
     });
   }
 
   close() {
-    this.socket?.destroy();
-    this.socket = null;
     this.fail(new PlatformError("APP_NOT_RUNNING"));
   }
 
-  private async connectIfNeeded(method: string) {
-    if (this.socket) return;
-    void method;
+  private async connectIfNeeded() {
     await this.connect();
   }
 
-  private receive(chunk: string) {
+  private async connectAndAuthenticate(socket: net.Socket) {
+    await new Promise<void>((resolve, reject) => {
+      const cleanup = () => {
+        socket.off("connect", onConnect);
+        socket.off("error", onError);
+        socket.off("close", onClose);
+      };
+      const onError = (error: Error) => { cleanup(); reject(error); };
+      const onClose = () => { cleanup(); reject(new PlatformError("APP_NOT_RUNNING", "NAI Recipe Studio is not running.")); };
+      const onConnect = () => { cleanup(); resolve(); };
+      socket.once("connect", onConnect);
+      socket.once("error", onError);
+      socket.once("close", onClose);
+    });
+    if (this.socket !== socket) throw new PlatformError("APP_NOT_RUNNING", "NAI Recipe Studio is not running.");
+    const id = this.nextId++;
+    await new Promise<void>((resolve, reject) => {
+      this.pending.set(id, { resolve: () => resolve(), reject });
+      try { socket.write(JSON.stringify({ id, type: "hello", version: RPC_PROTOCOL_VERSION, token: this.token }) + "\n"); }
+      catch (error) { this.fail(error, socket); }
+    });
+  }
+
+  private receive(chunk: string, socket: net.Socket) {
     this.buffer += chunk;
     for (;;) {
       const newline = this.buffer.indexOf("\n");
@@ -174,13 +198,18 @@ export class RpcClient {
         this.pending.delete(id);
         if (response.ok) pending.resolve(response.result);
         else pending.reject(new PlatformError((response.code as never) ?? "INTERNAL_ERROR", response.error?.message ?? response.code ?? "RPC error", { params: response.error?.params, retryable: response.error?.retryable }));
-      } catch (error) { this.fail(error); }
+      } catch (error) { this.fail(error, socket); }
     }
   }
 
-  private fail(error: unknown) {
+  private fail(error: unknown, sourceSocket?: net.Socket) {
+    if (sourceSocket && this.socket !== sourceSocket) return;
+    const socket = this.socket;
+    this.socket = null;
+    this.buffer = "";
     for (const pending of this.pending.values()) pending.reject(error);
     this.pending.clear();
+    socket?.destroy();
   }
 }
 

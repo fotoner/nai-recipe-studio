@@ -52,7 +52,7 @@ describe("workspace change refreshes external library writes", () => {
   it("refreshes recipes after an external recipe event", async () => {
     const fixture: RecipeSummary = { ...newRecipe("External recipe"), id: 21, version: 1, created_at: "2026-09-20T09:00:00.000Z", updated_at: "2026-09-20T09:00:00.000Z" };
     const { client, call, setRecipes, emit } = refreshClient();
-    renderWithI18n(<RecipesFeature client={client} onOpenRecipe={vi.fn()} onOpenGeneration={vi.fn()} />);
+    renderWithI18n(<RecipesFeature client={client} onOpenRecipe={vi.fn()} />);
 
     await waitFor(() => expect(call).toHaveBeenCalledWith("recipes.list", expect.anything()));
     setRecipes([fixture]);

@@ -5,12 +5,13 @@ import { useGalleryTranslation } from "./locale";
 import { Heart, Star } from "lucide-react";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Textarea } from "@/components/ui/textarea";
-import { ChevronLeft, ChevronRight, ClipboardCopy, Copy, Download, Eye, EyeOff, Loader2, Notebook, Trash2, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, ClipboardCopy, Copy, Download, Eye, EyeOff, Loader2, Notebook, Sparkles, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogClose, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "@/components/ui/toast";
 import { cn } from "@/lib/utils";
+import { recipeFromGeneration, type GenerationDraftFromImage, type GenerationSeedMode } from "@/core/recipe/from-generation";
 async function copyText(value: string) { try { await navigator.clipboard.writeText(value); return true; } catch { return false; } }
 import type { GalleryItem } from "./types";
 
@@ -29,11 +30,12 @@ async function copyImage(url: string): Promise<void> {
   }
 }
 
-export function Lightbox({ items, index, blur, onClose, onIndex, onDelete, onExport, onRate, onOpenRecipe }: {
+export function Lightbox({ items, index, blur, onClose, onIndex, onDelete, onExport, onRate, onOpenRecipe, onContinueFromGeneration }: {
   items: GalleryItem[];
   onExport: (item: GalleryItem, includeMetadata: boolean) => Promise<void>;
   onRate: (item: GalleryItem, patch: { score?: number | null; liked?: boolean; note?: string }) => Promise<void>;
   onOpenRecipe: (id: number) => void;
+  onContinueFromGeneration?: (draft: GenerationDraftFromImage) => void;
   index: number | null;
   blur: boolean;
   onClose: () => void;
@@ -80,6 +82,9 @@ export function Lightbox({ items, index, blur, onClose, onIndex, onDelete, onExp
     const text = [item.base_prompt, item.negative ? `\n[negative]\n${item.negative}` : "", item.characters.length ? `\n[characters]\n${item.characters.map((c, i) => `${i + 1}. ${c.prompt} @${c.x},${c.y}${c.uc ? ` | uc: ${c.uc}` : ""}`).join("\n")}` : ""].join("");
     toast.add((await copyText(text)) ? { title: t("promptCopied"), type: "success" } : { title: t("copyFailed"), type: "error" });
   };
+  const continueFromGeneration = (seedMode: GenerationSeedMode) => {
+    onContinueFromGeneration?.(recipeFromGeneration(item, seedMode));
+  };
 
   return (
     <Dialog open onOpenChange={o => { if (!o) onClose(); }}>
@@ -124,6 +129,10 @@ export function Lightbox({ items, index, blur, onClose, onIndex, onDelete, onExp
           <Button size="sm" onClick={doCopy} disabled={busy !== null || hidden} title={t("copyTitle")}>
             {busy === "copy" ? <Loader2 className="animate-spin" /> : <ClipboardCopy />} {t("copy")}
           </Button>
+          {onContinueFromGeneration ? <>
+            <Button size="sm" variant="outline" onClick={() => continueFromGeneration("same")}><Sparkles />{t("continueSameSeed")}</Button>
+            <Button size="sm" variant="outline" onClick={() => continueFromGeneration("new")}><Sparkles />{t("continueNewSeed")}</Button>
+          </> : null}
           <Button size="sm" variant="outline" onClick={doDownload} disabled={busy !== null} title={fileName}>
             {busy === "download" ? <Loader2 className="animate-spin" /> : <Download />} {t("download")}
           </Button>

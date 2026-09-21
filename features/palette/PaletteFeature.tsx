@@ -4,7 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import type { StudioClient, StoredCharacter, StoredPreset } from "@/contracts/studio";
+import type { StudioClient, StoredCharacter } from "@/contracts/studio";
 import { errorMessage, studioCall, subscribeToStudio } from "@/desktop/renderer/studio-client";
 import { type BlockType, type Character } from "@/features/shared/types";
 import { readAllPages } from "@/features/shared/pagination";
@@ -20,7 +20,6 @@ import {
   sortPresets,
   StyleCompare,
   type LibrarySort,
-  type PaletteExample,
   type PalettePreset,
   type PresetDraft,
   useDefaultStyleName,
@@ -34,25 +33,6 @@ function useChoice<T extends string>(key: string, fallback: T, allowed: readonly
   });
   const set = React.useCallback((next: T) => { try { localStorage.setItem(key, next); } catch { /* a local preference is optional */ } setValue(next); }, [key]);
   return [value, set];
-}
-
-function isPresetReference(block: unknown): block is { preset_id: number } {
-  return typeof block === "object" && block !== null && "preset_id" in block && typeof (block as { preset_id?: unknown }).preset_id === "number";
-}
-
-function withGalleryUsage(presets: StoredPreset[], items: Array<Pick<PaletteExample, "id" | "recipe_id" | "seed" | "created_at" | "rating" | "url"> & { recipe?: { blocks?: unknown[] } }>): PalettePreset[] {
-  const usage = new Map<number, { count: number; examples: PaletteExample[] }>();
-  for (const item of items) {
-    const matched = new Set<number>();
-    for (const block of item.recipe?.blocks ?? []) if (isPresetReference(block)) matched.add(block.preset_id);
-    for (const id of matched) {
-      const current = usage.get(id) ?? { count: 0, examples: [] };
-      current.count += 1;
-      if (current.examples.length < 4) current.examples.push({ id: item.id, recipe_id: item.recipe_id, seed: item.seed, created_at: item.created_at, rating: item.rating, url: item.url });
-      usage.set(id, current);
-    }
-  }
-  return presets.map((preset) => ({ ...preset, usage: usage.get(preset.id)?.count ?? 0, examples: usage.get(preset.id)?.examples ?? [] }));
 }
 
 export type PaletteProps = { client?: StudioClient };
@@ -79,13 +59,16 @@ export function PaletteFeature({ client }: PaletteProps) {
     if (!client) { setAll([]); setCharacters([]); return; }
     setError(null);
     try {
-      const presets = await readAllPages(({ limit, offset }) => studioCall(client, "presets.list", { limit, offset, includeHidden: false }));
-      const [galleryResult, charactersResult] = await Promise.allSettled([
-        studioCall(client, "gallery.list", { limit: 200, offset: 0, sort: "newest" }),
+      const [presetsResult, charactersResult] = await Promise.allSettled([
+        readAllPages(({ limit, offset }) => studioCall(client, "presets.list", { limit, offset, includeHidden: false })),
         readAllPages(({ limit, offset }) => studioCall(client, "characters.list", { limit, offset })),
       ]);
-      const galleryItems = galleryResult.status === "fulfilled" ? galleryResult.value.items : [];
-      setAll(withGalleryUsage(presets, galleryItems));
+      if (presetsResult.status !== "fulfilled") throw presetsResult.reason;
+      setAll(presetsResult.value.map((preset) => ({
+        ...preset,
+        usage: preset.usage ?? 0,
+        examples: preset.examples ?? [],
+      })));
       setCharacters(charactersResult.status === "fulfilled" ? charactersResult.value as StoredCharacter[] : []);
     } catch (cause) {
       setError(errorMessage(cause, "errors.load"));

@@ -1,7 +1,8 @@
 import path from "node:path";
 import { nativeText } from "./native-text";
 import { createStudioService, type StudioService } from "../../services/studio";
-import type { Command, StudioEvent } from "../../contracts/studio";
+import { APP_VERSION, type Command, type StudioEvent } from "../../contracts/studio";
+import { WorkspaceBackupCoordinator } from "./workspace-backup";
 import { CredentialStore, type SafeStorageLike } from "./credentials";
 import { ConnectionStore } from "./connections";
 import { getProfilePaths, APP_SCHEME } from "./paths";
@@ -103,7 +104,19 @@ export function createDesktopApplication(options: DesktopApplicationOptions) {
     homeDir: devClientHome,
     version: "0.1.0",
   });
+  const workspaceBackup = new WorkspaceBackupCoordinator({
+    service: backend.workspaceBackup,
+    stagingRoot: path.join(paths.userData, "workspace-staging"),
+    appVersion: APP_VERSION,
+    readImage: id => backend.readImage(id),
+    language: async () => (await backend.call("settings.get", {})).language,
+    dialog: {
+      openFile: options => electron.dialog.showOpenDialog(options),
+      saveFile: options => electron.dialog.showSaveDialog(options),
+    },
+  });
   const facade = new MainCommandFacade({
+    workspaceBackup,
     service: backend as unknown as DispatchableService,
     dispatcher: backendDispatcher,
     credentials,
@@ -177,6 +190,7 @@ export function createDesktopApplication(options: DesktopApplicationOptions) {
       void (async () => {
         try {
           await mcp.stop();
+          await workspaceBackup.close();
           await backend.close();
         } catch {
           // Shutdown must still release the app even if a transport or store
@@ -217,7 +231,7 @@ export function createDesktopApplication(options: DesktopApplicationOptions) {
     for (const event of bufferedEvents.splice(0)) window.webContents.send?.("studio.event", event);
   };
 
-  return { start, paths, backend, credentials, settings, connections, setup, mcp, getWindow: () => window };
+  return { start, paths, backend, credentials, settings, connections, setup, mcp, workspaceBackup, getWindow: () => window };
 }
 
 function resolveMcpAssets(options: DesktopApplicationOptions) {
@@ -232,7 +246,7 @@ function resolveMcpAssets(options: DesktopApplicationOptions) {
 function createMcpServer(options: { dispatcher: CommandDispatcher; paths: ReturnType<typeof getProfilePaths>; connections: ConnectionStore; readImage: (id: number) => Promise<Uint8Array> }) {
   const methods: Record<string, (params: unknown, context: { connectionId: string; scopes: string[] }) => Promise<unknown>> = {};
   const commands: Command[] = [
-    "status.read", "recipes.list", "recipes.get", "recipes.save", "recipes.duplicate", "characters.list", "characters.save", "presets.list", "presets.save", "recipe.compose", "recipe.validate", "generation.prepare", "generation.start", "generation.status", "generation.cancel", "gallery.list", "gallery.get", "gallery.rate",
+    "status.read", "recipes.list", "recipes.get", "recipes.save", "recipes.duplicate", "recipes.proposals.create", "recipes.proposals.list", "characters.list", "characters.save", "presets.list", "presets.save", "recipe.compose", "recipe.validate", "generation.prepare", "generation.start", "generation.status", "generation.cancel", "gallery.list", "gallery.get", "gallery.rate",
   ];
   for (const command of commands) {
     const key = command.replaceAll(".", "_");
@@ -250,7 +264,7 @@ function createMcpServer(options: { dispatcher: CommandDispatcher; paths: Return
   }
   methods["resource.schema"] = async () => recipeJsonSchema();
   methods["resource.guide.blocks"] = async () => "Use recipe.compose and recipe.validate before saving.";
-  methods["resource.guide.generation"] = async () => "generation.prepare returns a plan. The app must approve it before generation.start.";
+  methods["resource.guide.generation"] = async () => "generation.prepare fixes the recipe, seeds, count and estimate without generating images. New valid MCP plans within the connection's image and Anlas limits can return approved: true; generation.start can then run that plan without another app confirmation. If approved is false, inspect the findings, cost and connection limits before requesting app approval. App approval does not override connection limits. Never supply an approval flag yourself. Reuse the same planId and requestId after a transport failure; start and each image recheck permissions and cost.";
   methods["resource.recipe"] = async (params, context) => {
     const id = Number((params as { id?: unknown }).id);
     const connection = await options.connections.get(context.connectionId);
@@ -291,6 +305,7 @@ export async function startElectronApplication() {
     return application;
   } catch (error) {
     await application.mcp.stop().catch(() => undefined);
+    await application.workspaceBackup.close().catch(() => undefined);
     await application.backend.close().catch(() => undefined);
     app.quit();
     throw error;

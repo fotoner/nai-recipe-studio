@@ -64,5 +64,7 @@
   "note": "Note",
   "saveNote": "Save note",
   "saveFailed": "Could not save review",
-  "adhoc": "Ad hoc"
+  "adhoc": "Ad hoc",
+  "continueSameSeed": "Continue with the same seed",
+  "continueNewSeed": "Continue with a new seed"
 }

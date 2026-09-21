@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Check, Download, ExternalLink, ImageOff, Loader2, Search, Sparkles, Square } from "lucide-react";
+import { Check, ExternalLink, ImageOff, Loader2, Search, Sparkles, Square } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { GalleryItem as StoredGalleryItem, GenerationJob, GenerationPlan, Recipe, RecipeSummary } from "@/features/shared/types";
 import type { StudioClient, StudioEvent } from "@/contracts/studio";
@@ -9,16 +9,17 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Progress } from "@/components/ui/progress";
 import { PageHeader } from "@/features/shared/ui";
+import { readAllPages } from "@/features/shared/pagination";
 import { Thumbnail } from "@/features/gallery/Thumbnail";
-import { Lightbox } from "@/features/gallery/Lightbox";
-import type { GalleryItem as GalleryViewItem } from "@/features/gallery/types";
 import { errorMessage, studioCall, subscribeToStudio } from "@/desktop/renderer/studio-client";
+import { GenerationResults } from "./GenerationResults";
 import { useGenerationTranslation } from "./locale";
+import type { GenerationDraftFromImage } from "@/core/recipe/from-generation";
 
-type GenerationProps = { client?: StudioClient; initialRecipe?: Recipe; onOpenGallery: () => void };
+type GenerationProps = { client?: StudioClient; initialRecipe?: Recipe; onOpenGallery: () => void; onBusyChange?: (busy: boolean) => void; onContinueFromGeneration?: (draft: GenerationDraftFromImage) => void };
 type BatchRow = { recipe_id: number; name: string; ok: boolean; count: number; error?: string };
 type ActiveBatch = { name: string; index: number; total: number };
-type BatchQueue = { plans: GenerationPlan[]; index: number; jobId?: string };
+type BatchQueue = { plans: GenerationPlan[]; index: number; jobId?: string; allowPaid: boolean };
 
 function normalizeRecipe(value: unknown): Recipe {
   const input = (value ?? {}) as Recipe;
@@ -34,14 +35,11 @@ function settingsSummary(recipe: Recipe, stepsLabel: string) {
   const settings = settingsOf(recipe);
   return settings?.type === "settings" ? `${settings.width}×${settings.height} · ${settings.steps}${stepsLabel}` : "";
 }
-function toGalleryViewItem(item: StoredGalleryItem): GalleryViewItem {
-  return { ...item, recipe_snapshot: JSON.stringify(item.recipe), characters: item.characters ?? [], anlas_cost: item.estimatedAnlas };
-}
 function pendingLabel(plan: GenerationPlan, t: (key: string, options?: Record<string, unknown>) => string) {
   return `${plan.recipe.name || t("untitled")} · ${t("fixedCount", { count: plan.count })}`;
 }
 
-export function GenerationFeature({ client, initialRecipe, onOpenGallery }: GenerationProps) {
+export function GenerationFeature({ client, initialRecipe, onOpenGallery, onBusyChange, onContinueFromGeneration }: GenerationProps) {
   const { t } = useGenerationTranslation();
   const { t: centralT } = useTranslation();
   const [recipes, setRecipes] = React.useState<RecipeSummary[] | null>(null);
@@ -49,14 +47,16 @@ export function GenerationFeature({ client, initialRecipe, onOpenGallery }: Gene
   const [query, setQuery] = React.useState("");
   const [picked, setPicked] = React.useState<number[]>(initialRecipe?.id ? [initialRecipe.id] : []);
   const [count, setCount] = React.useState(1);
-  const [paid, setPaid] = React.useState(false);
+  const [paidForKey, setPaidForKey] = React.useState<string | null>(null);
+  const [planning, setPlanning] = React.useState(false);
+  const [planRevision, setPlanRevision] = React.useState(0);
   const [busy, setBusy] = React.useState(false);
   const [stopping, setStopping] = React.useState(false);
   const [active, setActive] = React.useState<ActiveBatch | null>(null);
   const [rows, setRows] = React.useState<BatchRow[]>([]);
   const [images, setImages] = React.useState<StoredGalleryItem[]>([]);
-  const [lightboxIndex, setLightboxIndex] = React.useState<number | null>(null);
   const [plans, setPlans] = React.useState<GenerationPlan[]>([]);
+  const [preparedInputKey, setPreparedInputKey] = React.useState("");
   const [pendingPlans, setPendingPlans] = React.useState<GenerationPlan[]>([]);
   const [pendingId, setPendingId] = React.useState("");
   const [pendingPlan, setPendingPlan] = React.useState<GenerationPlan | null>(null);
@@ -69,9 +69,12 @@ export function GenerationFeature({ client, initialRecipe, onOpenGallery }: Gene
   const running = React.useRef(false);
   const mounted = React.useRef(true);
   const queue = React.useRef<BatchQueue | null>(null);
+  const planSequence = React.useRef(0);
   const handledJobs = React.useRef(new Set<string>());
   const activeJob = React.useRef<GenerationJob | null>(null);
   const startNextRef = React.useRef<(() => Promise<void>) | null>(null);
+  const busyCallbackRef = React.useRef(onBusyChange);
+  busyCallbackRef.current = onBusyChange;
 
   React.useEffect(() => {
     mounted.current = true;
@@ -84,6 +87,11 @@ export function GenerationFeature({ client, initialRecipe, onOpenGallery }: Gene
     const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
     window.addEventListener("beforeunload", warn);
     return () => window.removeEventListener("beforeunload", warn);
+  }, [busy]);
+
+  React.useEffect(() => {
+    busyCallbackRef.current?.(busy && queue.current !== null);
+    return () => busyCallbackRef.current?.(false);
   }, [busy]);
 
   const updateJob = React.useCallback((next: GenerationJob) => {
@@ -106,6 +114,10 @@ export function GenerationFeature({ client, initialRecipe, onOpenGallery }: Gene
     if (!mounted.current) return;
     setBusy(false);
     setStopping(false);
+    setPlans([]);
+    setPreparedInputKey("");
+    setPaidForKey(null);
+    setPlanRevision(value => value + 1);
   }, []);
 
   const finishJob = React.useCallback(async (finished: GenerationJob) => {
@@ -141,13 +153,24 @@ export function GenerationFeature({ client, initialRecipe, onOpenGallery }: Gene
     if (!plan) { finishBatch(); return; }
     if (mounted.current) setActive({ name: plan.recipe.name, index: currentQueue.index, total: currentQueue.plans.length });
     try {
-      const approved = plan.approved ? plan : await studioCall(client, "generation.approve", { planId: plan.id });
+      const approved = plan.approved ? plan : await studioCall(client, "generation.approve", { planId: plan.id, ...(plan.estimatedAnlas !== null && plan.estimatedAnlas > 0 && currentQueue.allowPaid ? { allowPaid: true } : {}) });
+      if (stop.current || !mounted.current) { finishBatch(); return; }
       if (mounted.current) setPlans(current => current.map(item => item.id === approved.id ? approved : item));
       const requestId = globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
       const next = await studioCall(client, "generation.start", { planId: approved.id, requestId });
       currentQueue.jobId = next.id;
       handledJobs.current.delete(next.id);
       updateJob(next);
+      if (stop.current && isActiveJob(next)) {
+        try {
+          const cancelled = await studioCall(client, "generation.cancel", { id: next.id });
+          updateJob(cancelled);
+          if (isFinishedJob(cancelled)) await finishJob(cancelled);
+        } catch (cause) {
+          if (mounted.current) setError(errorMessage(cause, "errors.generation"));
+        }
+        return;
+      }
       if (isFinishedJob(next)) await finishJob(next);
     } catch (cause) {
       if (mounted.current) setError(errorMessage(cause, "errors.generation"));
@@ -162,7 +185,7 @@ export function GenerationFeature({ client, initialRecipe, onOpenGallery }: Gene
     if (!client) { setRecipes([]); return; }
     setLoadError("");
     const results = await Promise.allSettled([
-      studioCall(client, "recipes.list", { limit: 200, offset: 0 }),
+      readAllPages(request => studioCall(client, "recipes.list", request)),
       studioCall(client, "generation.pending", {}),
       studioCall(client, "generation.list", {}),
       studioCall(client, "status.read", {}),
@@ -170,7 +193,7 @@ export function GenerationFeature({ client, initialRecipe, onOpenGallery }: Gene
     const recipeResult = results[0];
     if (recipeResult.status === "rejected") setLoadError(errorMessage(recipeResult.reason, "generationView.loadFailed"));
     else {
-      const listed: RecipeSummary[] = recipeResult.value.items.map(recipe => ({ ...recipe }));
+      const listed: RecipeSummary[] = recipeResult.value.map(recipe => ({ ...recipe }));
       if (initialRecipe?.id) {
         const index = listed.findIndex(recipe => recipe.id === initialRecipe.id);
         const initial = { ...initialRecipe, latest: index >= 0 ? listed[index].latest : undefined } as RecipeSummary;
@@ -179,7 +202,7 @@ export function GenerationFeature({ client, initialRecipe, onOpenGallery }: Gene
       }
       setRecipes(listed);
     }
-    if (results[1].status === "fulfilled") setPendingPlans(Array.isArray(results[1].value) ? results[1].value : []);
+    if (results[1].status === "fulfilled") setPendingPlans(Array.isArray(results[1].value) ? results[1].value.filter(plan => Boolean(plan.connectionId)) : []);
     if (results[2].status === "fulfilled") {
       const listedJobs = Array.isArray(results[2].value) ? results[2].value : [];
       setJobs(listedJobs);
@@ -227,52 +250,73 @@ export function GenerationFeature({ client, initialRecipe, onOpenGallery }: Gene
   const selectedCount = selected.length;
   const total = selectedCount * count;
   const missingSettings = selected.some(recipe => !settingsOf(recipe));
-  const allPlansReady = selectedCount > 0 && plans.length === selectedCount && plans.every(plan => selected.some(recipe => recipe.id === plan.recipe.id));
+  const planInputKey = JSON.stringify({ recipes: selected.map(recipe => ({ id: recipe.id, version: recipe.version, recipe: normalizeRecipe(recipe) })), count });
+  const allPlansReady = selectedCount > 0 && preparedInputKey === planInputKey && plans.length === selectedCount && plans.every(plan => plan.count === count && selected.some(recipe => recipe.id === plan.recipe.id));
   const estimated = allPlansReady ? plans.reduce<number | null>((sum, plan) => plan.estimatedAnlas === null || sum === null ? null : sum + plan.estimatedAnlas, 0) : null;
   const hasValidationErrors = plans.some(plan => plan.findings.some(finding => finding.severity === "error"));
-  const canRun = allPlansReady && !busy && !missingSettings && !hasValidationErrors && (dryRun || estimated !== null) && (dryRun || estimated === 0 || paid);
   const pending = pendingPlans.find(plan => plan.id === pendingId) ?? pendingPlan;
   const pendingFindings = pending?.findings ?? [];
   const pendingHasValidationErrors = pendingFindings.some(finding => finding.severity === "error");
   const pendingEstimateUnknown = !!pending && pending.estimatedAnlas === null && !dryRun;
   const pendingNeedsPaidConfirmation = !!pending && !dryRun && pending.estimatedAnlas !== null && pending.estimatedAnlas > 0 && !pendingPaid;
   const pendingApprovalBlocked = pendingHasValidationErrors || pendingEstimateUnknown || pendingNeedsPaidConfirmation;
+  const paidConsentKey = allPlansReady ? JSON.stringify({ input: planInputKey, plans: plans.map(plan => ({ id: plan.id, estimatedAnlas: plan.estimatedAnlas })) }) : "";
+  const paid = Boolean(paidConsentKey && paidForKey === paidConsentKey);
+  const canRun = allPlansReady && !planning && !busy && !missingSettings && !hasValidationErrors && (dryRun || estimated !== null) && (dryRun || estimated === 0 || paid);
 
-  const clearRunState = () => { setPlans([]); setPaid(false); setRows([]); setImages([]); setLightboxIndex(null); setActive(null); setJob(null); setStopping(false); setError(""); stop.current = false; };
+  const clearRunState = () => { setPlans([]); setPreparedInputKey(""); setPaidForKey(null); setRows([]); setImages([]); setActive(null); setJob(null); setStopping(false); setError(""); stop.current = false; };
   const choose = (ids: number[]) => { setPicked(ids); clearRunState(); };
   const chooseRecipe = (recipe: RecipeSummary) => choose(picked.includes(recipe.id) ? picked.filter(id => id !== recipe.id) : [...picked, recipe.id]);
-  const prepare = async () => {
-    if (!client || !selectedCount || busy || pending) return;
-    setBusy(true); setError(""); setPlans([]); setRows([]); setImages([]); setLightboxIndex(null); stop.current = false;
-    const nextPlans: GenerationPlan[] = [];
-    try {
-      for (const recipe of selected) {
-        const plan = await studioCall(client, "generation.prepare", { recipe: normalizeRecipe(recipe), count });
-        nextPlans.push(plan);
-        if (mounted.current) setPlans([...nextPlans]);
-      }
-    } catch (cause) { if (mounted.current) setError(errorMessage(cause, "errors.generation")); }
-    finally { if (mounted.current) setBusy(false); }
-  };
+
+  React.useEffect(() => {
+    const sequence = ++planSequence.current;
+    let current = true;
+    if (!client || !selectedCount || pending || missingSettings) {
+      setPlans([]);
+      setPreparedInputKey("");
+      setPaidForKey(null);
+      setPlanning(false);
+      return () => { current = false; };
+    }
+    setPlanning(true);
+    setPlans([]);
+    setPreparedInputKey("");
+    setPaidForKey(null);
+    setError("");
+    stop.current = false;
+    void Promise.allSettled(selected.map(recipe => studioCall(client, "generation.prepare", { recipe: normalizeRecipe(recipe), count })))
+      .then(results => {
+        if (!current || sequence !== planSequence.current) return;
+        const successful = results.flatMap(result => result.status === "fulfilled" ? [result.value] : []) as GenerationPlan[];
+        setPlans(successful);
+        if (successful.length === selectedCount) setPreparedInputKey(planInputKey);
+        const failed = results.find(result => result.status === "rejected");
+        if (failed?.status === "rejected") setError(errorMessage(failed.reason, "errors.generation"));
+      })
+      .finally(() => { if (current && sequence === planSequence.current) setPlanning(false); });
+    return () => { current = false; };
+  }, [client, count, missingSettings, pending, planInputKey, planRevision, selected, selectedCount]);
 
   const run = async () => {
     if (!client || !canRun || running.current || pending) return;
     running.current = true;
     stop.current = false;
     setBusy(true); setStopping(false); setError("");
-    queue.current = { plans: [...plans], index: 0 };
+    setPaidForKey(null);
+    queue.current = { plans: [...plans], index: 0, allowPaid: paid };
     await startNext();
   };
 
   const selectPending = (id: string) => {
     const next = pendingPlans.find(plan => plan.id === id) ?? null;
-    setPendingId(id); setPendingPlan(next); setPendingPaid(false); setPlans([]); setPicked(next?.recipe.id ? [next.recipe.id] : []); setError("");
+    setPendingId(id); setPendingPlan(next); setPendingPaid(false); setPlans([]); setPreparedInputKey(""); setPaidForKey(null); setPicked(next?.recipe.id ? [next.recipe.id] : []); setError("");
   };
   const approvePending = async () => {
     if (!client || !pending || busy || pending.approved || pendingApprovalBlocked) return;
     setBusy(true); setError("");
     try {
-      const approved = await studioCall(client, "generation.approve", { planId: pending.id });
+      const allowPaid = pending.estimatedAnlas !== null && pending.estimatedAnlas > 0 && pendingPaid;
+      const approved = await studioCall(client, "generation.approve", { planId: pending.id, ...(allowPaid ? { allowPaid: true } : {}) });
       setPendingPlan(approved); setPendingPlans(current => current.map(item => item.id === approved.id ? approved : item));
     } catch (cause) { setError(errorMessage(cause, "errors.generation")); }
     finally { setBusy(false); }
@@ -292,18 +336,7 @@ export function GenerationFeature({ client, initialRecipe, onOpenGallery }: Gene
     : "";
   const activeProgress = active && selectedCount ? Math.round((rows.length / active.total) * 100) : 0;
   const resultStatus = active ? (busy ? t("active", { name: active.name, done: rows.length, total: active.total }) : rows.length < active.total ? t("stopped") : t("completed")) : "";
-  const pendingCost = pending ? pending.estimatedAnlas === null ? dryRun ? t("dryRunCost") : t("estimateUnknown") : pending.estimatedAnlas === 0 ? t("freeCost") : t("paidCost", { anlas: pending.estimatedAnlas.toLocaleString() }) : "";
-  const lightboxItems = React.useMemo(() => images.map(toGalleryViewItem), [images]);
-  const exportImage = React.useCallback(async (item: GalleryViewItem, includeMetadata: boolean) => {
-    if (client) await studioCall(client, "gallery.export", { id: item.id, includeMetadata });
-  }, [client]);
-  const rateImage = React.useCallback(async (item: GalleryViewItem, patch: { score?: number | null; liked?: boolean; note?: string }) => {
-    if (!client) return;
-    const updated = await studioCall(client, "gallery.rate", { id: item.id, ...patch });
-    if (mounted.current) setImages(current => current.map(value => value.id === updated.id ? updated : value));
-  }, [client]);
-  const openRecipe = React.useCallback((id: number) => { window.location.hash = `#/recipe/${id}`; }, []);
-
+  const pendingCost = pending ? pending.estimatedAnlas === null ? dryRun ? t("dryRunCost") : t("estimateUnknown") : pending.estimatedAnlas === 0 ? dryRun ? t("dryRunCost") : t("freeCost") : t("paidCost", { anlas: pending.estimatedAnlas.toLocaleString() }) : "";
   return <>
     <PageHeader title={t("title")} description={t("description")}>
       <a href="#/recipes" className="rounded-lg border border-border px-3 py-1.5 text-xs hover:bg-muted">{t("recipeManagement")}</a>
@@ -354,24 +387,22 @@ export function GenerationFeature({ client, initialRecipe, onOpenGallery }: Gene
       <section aria-label={t("settingsLabel")} className="flex flex-col gap-4 rounded-xl border border-border bg-card p-4 lg:sticky lg:top-6">
         <h2 className="text-sm font-semibold"><span className="mr-2 text-muted-foreground">02</span>{t("settings")}</h2>
         <GenerationCount value={count} onChange={value => { setCount(value); clearRunState(); }} disabled={busy || !!pending} label={t("countPerRecipe")} quickLabel={t("quickCount")} unit={t("images")} hint={t("countHint")} />
-        <div className="flex flex-col gap-2 rounded-lg bg-muted/50 p-3 text-xs"><div className="flex items-baseline justify-between"><span className="text-muted-foreground">{t("total", { recipes: selectedCount, count })}</span><strong className="text-xl tabular-nums">{total}<span className="ml-1 text-xs font-normal">{t("images")}</span></strong></div><div className="flex justify-between gap-2 border-t border-border pt-2"><span className="text-muted-foreground">{t("estimatedCost")}</span><span className="font-medium">{!selectedCount || !allPlansReady ? "—" : estimated === null ? dryRun ? t("dryRunCost") : t("estimateUnknown") : estimated === 0 ? t("freeCost") : t("paidCost", { anlas: estimated.toLocaleString() })}</span></div></div>
+        <div className="flex flex-col gap-2 rounded-lg bg-muted/50 p-3 text-xs"><div className="flex items-baseline justify-between"><span className="text-muted-foreground">{t("total", { recipes: selectedCount, count })}</span><strong className="text-xl tabular-nums">{total}<span className="ml-1 text-xs font-normal">{t("images")}</span></strong></div><div className="flex justify-between gap-2 border-t border-border pt-2"><span className="text-muted-foreground">{t("estimatedCost")}</span><span className="font-medium">{!selectedCount || !allPlansReady ? "—" : estimated === null ? dryRun ? t("dryRunCost") : t("estimateUnknown") : estimated === 0 ? dryRun ? t("dryRunCost") : t("freeCost") : t("paidCost", { anlas: estimated.toLocaleString() })}</span></div></div>
         {selectedCount ? <ul className="max-h-28 space-y-1.5 overflow-y-auto text-xs text-muted-foreground">{selected.map(recipe => <li key={recipe.id} className="truncate" title={recipe.name}>· {recipe.name}</li>)}</ul> : <p className="text-xs text-muted-foreground">{t("selectRecipeHint")}</p>}
-        {!dryRun && estimated !== null && estimated > 0 ? <label className="flex items-start gap-2 text-xs leading-5"><Checkbox checked={paid} disabled={busy || !!pending} onCheckedChange={value => setPaid(Boolean(value))} className="mt-0.5" />{t("paidConfirm", { anlas: estimated.toLocaleString() })}</label> : null}
+        {!dryRun && allPlansReady && estimated !== null && estimated > 0 ? <label className="flex items-start gap-2 text-xs leading-5"><Checkbox checked={paid} disabled={busy || !!pending || planning} onCheckedChange={value => setPaidForKey(value ? paidConsentKey : null)} className="mt-0.5" />{t("paidConfirm", { anlas: estimated.toLocaleString() })}</label> : null}
         {missingSettings ? <p className="text-xs text-amber-500">{t("missingSettings")}</p> : null}
         {plans.some(plan => plan.findings.length) ? <div className="space-y-1 rounded-lg border border-amber-500/30 p-3 text-xs text-amber-600">{plans.flatMap(plan => plan.findings.filter(finding => finding.severity === "error").map(finding => <p key={`${plan.id}-${finding.code}`}>{centralT(finding.messageKey, finding.params)}</p>))}</div> : null}
         {translatedError ? <div role="alert" className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">{translatedError}</div> : null}
-        <Button size="lg" className="w-full" variant="outline" disabled={busy || !!pending || !selectedCount || allPlansReady} onClick={() => void prepare()}>{busy && !queue.current ? <Loader2 className="animate-spin" /> : <Sparkles />}{busy && !queue.current ? t("preparing") : t("prepare")}</Button>
-        {allPlansReady ? <Button size="lg" className="w-full" disabled={!canRun || !!pending} onClick={() => void run()}>{busy ? <Loader2 className="animate-spin" /> : <Sparkles />}{busy ? t("preparing") : t("approve")}</Button> : null}
+        <Button size="lg" className="w-full" disabled={!canRun || !!pending} onClick={() => void run()}>{busy || planning ? <Loader2 className="animate-spin" /> : <Sparkles />}{busy ? t("preparing") : planning ? t("preparingSingle") : t(total === 1 ? "generateOneImage" : "generateImages", { count: total })}</Button>
         {busy && active ? <Button variant="outline" size="sm" disabled={stopping} onClick={requestStop}><Square />{stopping ? t("stopping") : t("stop")}</Button> : null}
         <p className="text-[11px] leading-5 text-muted-foreground">{t("countHint")}</p>
       </section>
 
       <section aria-label={t("results")} className="min-w-0 lg:col-span-2">
-        <Lightbox items={lightboxItems} index={lightboxIndex} blur={false} onClose={() => setLightboxIndex(null)} onIndex={setLightboxIndex} onExport={exportImage} onRate={rateImage} onOpenRecipe={openRecipe} />
         <div className="mb-3 flex items-center justify-between gap-2"><h2 className="text-sm font-semibold"><span className="mr-2 text-muted-foreground">03</span>{t("results")} {images.length ? <span className="ml-1 text-muted-foreground">{images.length}{t("images")}</span> : null}{jobs.length ? <span className="ml-1 text-muted-foreground">· {t("job")} {jobs.length}</span> : null}</h2><button type="button" onClick={onOpenGallery} className="text-xs text-muted-foreground hover:text-foreground">{t("viewGallery")}</button></div>
         {active ? <div className="mb-3 rounded-xl border border-border p-3 text-xs" role="status" aria-live="polite"><div className="mb-2 flex flex-wrap justify-between gap-2"><span>{resultStatus}</span><span className="text-muted-foreground">{rows.length}/{active.total}</span></div><Progress aria-label={t("active", { name: active.name, done: rows.length, total: active.total })} value={activeProgress} />{busy ? <p className="mt-2 text-muted-foreground">{stopping ? t("stopping") : t("keepOpen")}</p> : null}</div> : null}
         {rows.length ? <div className="mb-3 space-y-2">{rows.map(row => <div key={row.recipe_id} className="flex flex-wrap items-start gap-2 rounded-lg border border-border p-2 text-xs"><Badge variant={row.ok ? "secondary" : "destructive"}>{row.ok ? `${row.count}${t("images")}` : t("failed")}</Badge><a href={`#/recipe/${row.recipe_id}`} className="min-w-0 break-words hover:underline">{row.name}</a>{row.error ? <p className="w-full break-words text-destructive">{centralT(row.error)}</p> : null}</div>)}</div> : null}
-        {images.length ? <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-4">{images.map((item, index) => <div key={item.id} className="min-w-0 overflow-hidden rounded-xl border border-border bg-card"><button type="button" onClick={() => setLightboxIndex(index)} className="block w-full overflow-hidden bg-muted" aria-label={t("openImage", { id: item.id })}><Thumbnail src={item.url} alt={item.recipe_name} className="aspect-3/4 w-full object-cover" /></button><div className="flex flex-col gap-1 p-2 text-xs"><span className="truncate" title={item.recipe_name}>{item.recipe_name}</span><div className="flex items-center justify-between gap-1 text-muted-foreground"><span className="truncate font-mono text-[10px]">{t("seed", { seed: item.seed })}</span><button type="button" onClick={() => setLightboxIndex(index)} aria-label={t("download", { id: item.id })} className="rounded p-1 hover:text-foreground"><Download className="size-3.5" /></button></div></div></div>)}</div> : <p className="rounded-xl border border-dashed border-border px-4 py-8 text-center text-xs text-muted-foreground">{busy ? t("firstResult") : t("emptyResults")}</p>}
+        {images.length ? <GenerationResults client={client} items={images} onContinueFromGeneration={onContinueFromGeneration} /> : <p className="rounded-xl border border-dashed border-border px-4 py-8 text-center text-xs text-muted-foreground">{busy ? t("firstResult") : t("emptyResults")}</p>}
       </section>
     </div>
   </>;
@@ -379,5 +410,5 @@ export function GenerationFeature({ client, initialRecipe, onOpenGallery }: Gene
 
 function GenerationCount({ value, onChange, disabled, label, quickLabel, unit, hint }: { value: number; onChange: (value: number) => void; disabled?: boolean; label: string; quickLabel: string; unit: string; hint: string }) {
   const id = React.useId();
-  return <div className="flex flex-col gap-2"><div className="flex items-center justify-between gap-3"><label htmlFor={id} className="text-xs font-medium">{label}</label><div className="flex items-center gap-1.5 text-xs text-muted-foreground"><Input id={id} type="number" min={1} max={200} step={1} value={value} disabled={disabled} className="h-8 w-16 text-center font-mono" onChange={event => onChange(Math.max(1, Math.min(200, Math.trunc(Number(event.target.value) || 1))))} /><span>{unit}</span></div></div><div className="grid grid-cols-4 gap-1.5" role="group" aria-label={`${label} ${quickLabel}`}>{[1, 2, 4, 8].map(item => <Button key={item} size="sm" variant={value === item ? "default" : "outline"} aria-pressed={value === item} disabled={disabled} onClick={() => onChange(item)}>{item}{unit}</Button>)}</div><p className="text-[11px] leading-5 text-muted-foreground">{hint}</p></div>;
+  return <div className="flex flex-col gap-2"><div className="flex items-center justify-between gap-3"><label htmlFor={id} className="text-xs font-medium">{label}</label><div className="flex items-center gap-1.5 text-xs text-muted-foreground"><Input id={id} type="number" min={1} max={8} step={1} value={value} disabled={disabled} className="h-8 w-16 text-center font-mono" onChange={event => onChange(Math.max(1, Math.min(8, Math.trunc(Number(event.target.value) || 1))))} /><span>{unit}</span></div></div><div className="grid grid-cols-4 gap-1.5" role="group" aria-label={`${label} ${quickLabel}`}>{[1, 2, 4, 8].map(item => <Button key={item} size="sm" variant={value === item ? "default" : "outline"} aria-pressed={value === item} disabled={disabled} onClick={() => onChange(item)}>{item}{unit}</Button>)}</div><p className="text-[11px] leading-5 text-muted-foreground">{hint}</p></div>;
 }

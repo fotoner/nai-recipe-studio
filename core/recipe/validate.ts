@@ -1,3 +1,4 @@
+import { charactersForRecipe } from "./characters";
 import { composeParts } from "../../lib/composer";
 import { canCombine, sexualContentGate } from "../../lib/policy";
 import { sanitizePrompt, splitTags } from "../../lib/prompt-utils";
@@ -50,7 +51,10 @@ function countFinding(recipe: Recipe, characters: Character[]): Finding[] {
 
 /** Validate neutral structural and safety rules. Private style recommendations are not part of this graph. */
 export function validateRecipe(recipe: Recipe, characters: Character[], status?: { battery_percent: number }): Finding[] {
+  characters = charactersForRecipe(recipe, characters);
   const findings: Finding[] = [];
+  const ids = new Set(characters.map(character => character.id));
+  if (recipe.blocks.some(block => block.type === "cast" && block.members.some(member => !ids.has(member.character_id)))) findings.push(finding("MISSING_CHARACTER", "validation.missingCharacter", "error", "cast"));
   for (const value of stringsOf(recipe)) {
     if (sanitizePrompt(value) !== value) findings.push(finding("PROMPT_SYNTAX", "validation.promptSyntax", "error", undefined, true));
     if (unsupportedSyntax.test(value) || value.includes("|")) findings.push(finding("UNSUPPORTED_SYNTAX", "validation.unsupportedSyntax", "error", undefined, false));

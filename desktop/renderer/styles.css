@@ -132,6 +132,18 @@
     @apply font-sans;
   }
 }
+
+/* The native macOS traffic lights occupy this blank, draggable strip. */
+.studio-titlebar-drag-region {
+  height: 40px;
+  flex: 0 0 40px;
+  background: var(--background);
+  -webkit-app-region: drag;
+  app-region: drag;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
 /* Scrollbars: thin, low-contrast, only visible while hovering the scroll container (Firefox + WebKit). */
 @layer base {
   * {

@@ -1,3 +1,5 @@
+import { workspaceBackupInputSchemas, type WorkspaceBackupCommands } from "./workspace-backup";
+import { recipeProposalCommandSchemas, type RecipeProposalCommands, type RecipeProposalEvent } from "./proposals";
 import { z } from "zod";
 import type { Block, BlockPreset, Character, Composed, Recipe } from "../lib/schema";
 
@@ -7,8 +9,10 @@ export const APP_VERSION = "0.1.0";
 export const PROTOCOL_VERSION = 1;
 export type Language = "system" | "ko" | "ja" | "en";
 export type StoredRecipe = Recipe & { id: number; version: number; created_at: string; updated_at: string; latest?: GalleryItem; generation_count?: number };
-export type StoredCharacter = Character & { id: number; created_at: string };
-export type StoredPreset = BlockPreset & { id: number; builtinId?: string; nameKey?: string; descriptionKey?: string; hidden?: boolean };
+export type GenerationExample = Pick<GalleryItem, "id" | "recipe_id" | "seed" | "created_at" | "rating" | "url">;
+export type TagSuggestion = { name: string; tag: string; post_count: number; category: number; frequency?: number };
+export type StoredCharacter = Character & { id: number; created_at: string; generation_count?: number; examples?: GenerationExample[] };
+export type StoredPreset = BlockPreset & { id: number; builtinId?: string; nameKey?: string; descriptionKey?: string; hidden?: boolean; usage?: number; examples?: GenerationExample[] };
 export type Page<T> = { items: T[]; total: number };
 export type ListInput = { query?: string; limit?: number; offset?: number };
 export type GalleryListInput = ListInput & { recipeId?: number; ratingMax?: number; liked?: boolean; sort?: "newest" | "oldest"; characterIds?: number[]; presetIds?: number[] };
@@ -24,13 +28,13 @@ export type GalleryItem = { id: number; recipe_id: number | null; recipe_name: s
 export type Connection = { id: string; name: string; permissions: { read: boolean; write: boolean; generate: boolean; images: boolean }; maxImages: number; maxAnlas: number; created_at: string };
 export type SetupTarget = "codex" | "claude-desktop";
 export type SetupStatus = { target: SetupTarget; available: boolean; mcpInstalled: boolean; skillInstalled: boolean; skillSupported: boolean; version: string | null; configPath: string; skillPath: string | null; messageKey?: string };
-export type StudioEvent = { type: "workspace.changed"; entity: "recipes" | "characters" | "presets" | "gallery"; ids?: number[] } | { type: "job.changed"; job: GenerationJob } | { type: "settings.changed"; settings: Settings } | { type: "generation.prepared"; plan: GenerationPlan };
+export type StudioEvent = RecipeProposalEvent | { type: "workspace.changed"; entity: "recipes" | "characters" | "presets" | "gallery"; ids?: number[] } | { type: "job.changed"; job: GenerationJob } | { type: "settings.changed"; settings: Settings } | { type: "generation.prepared"; plan: GenerationPlan };
 export type StudioErrorData = { code: string; messageKey: string; params?: Record<string, string | number>; retryable?: boolean };
 export class StudioError extends Error {
   constructor(public readonly data: StudioErrorData) { super(data.code); this.name = "StudioError"; }
 }
 
-export interface StudioCommands {
+export interface StudioCommands extends RecipeProposalCommands, WorkspaceBackupCommands {
   "status.read": { input: Record<string, never>; output: StudioStatus };
   "recipes.list": { input: ListInput; output: Page<StoredRecipe> };
   "recipes.get": { input: { id: number }; output: StoredRecipe };
@@ -39,6 +43,7 @@ export interface StudioCommands {
   "recipes.delete": { input: { id: number }; output: { deleted: boolean } };
   "recipes.versions": { input: { id: number }; output: RecipeVersion[] };
   "characters.list": { input: ListInput; output: Page<StoredCharacter> };
+  "characters.tagLookup": { input: { mode: "search"; query: string; kind: "character" | "copyright" } | { mode: "related"; tag: string }; output: TagSuggestion[] };
   "characters.save": { input: { character: Character }; output: StoredCharacter };
   "characters.delete": { input: { id: number }; output: { deleted: boolean } };
   "presets.list": { input: ListInput & { type?: string; includeHidden?: boolean }; output: Page<StoredPreset> };
@@ -48,7 +53,7 @@ export interface StudioCommands {
   "recipe.validate": { input: { recipe: Recipe; fixes?: string[] }; output: { findings: Finding[]; recipe: Recipe; applied: string[] } };
   "generation.prepare": { input: { recipe: Recipe; count: number; seed?: number }; output: GenerationPlan };
   "generation.pending": { input: Record<string, never>; output: GenerationPlan[] };
-  "generation.approve": { input: { planId: string }; output: GenerationPlan };
+  "generation.approve": { input: { planId: string; allowPaid?: boolean }; output: GenerationPlan };
   "generation.start": { input: { planId: string; requestId: string }; output: GenerationJob };
   "generation.status": { input: { id: string }; output: GenerationJob };
   "generation.list": { input: Record<string, never>; output: GenerationJob[] };
@@ -92,6 +97,8 @@ const payload = z.custom<Recipe>(value => !!value && typeof value === "object" &
 const target = z.enum(["codex", "claude-desktop"]);
 const permission = z.object({ read: z.boolean(), write: z.boolean(), generate: z.boolean(), images: z.boolean() }).strict();
 export const commandInputSchemas: Record<Command, z.ZodType> = {
+  ...recipeProposalCommandSchemas,
+  ...workspaceBackupInputSchemas,
   "status.read": empty,
   "recipes.list": list,
   "recipes.get": id,
@@ -100,6 +107,10 @@ export const commandInputSchemas: Record<Command, z.ZodType> = {
   "recipes.delete": id,
   "recipes.versions": id,
   "characters.list": list,
+  "characters.tagLookup": z.discriminatedUnion("mode", [
+    z.object({ mode: z.literal("search"), query: z.string().trim().min(1).max(80), kind: z.enum(["character", "copyright"]) }).strict(),
+    z.object({ mode: z.literal("related"), tag: z.string().trim().min(1).max(80) }).strict(),
+  ]),
   "characters.save": z.object({ character: z.object({}).passthrough() }).strict(),
   "characters.delete": id,
   "presets.list": list.extend({ type: z.string().optional(), includeHidden: z.boolean().optional() }),
@@ -109,7 +120,7 @@ export const commandInputSchemas: Record<Command, z.ZodType> = {
   "recipe.validate": z.object({ recipe: payload, fixes: z.array(z.string()).max(100).optional() }).strict(),
   "generation.prepare": z.object({ recipe: payload, count: z.number().int().min(1).max(200), seed: z.number().int().min(0).max(4294967295).optional() }).strict(),
   "generation.pending": empty,
-  "generation.approve": z.object({ planId: z.string().min(1).max(200) }).strict(),
+  "generation.approve": z.object({ planId: z.string().min(1).max(200), allowPaid: z.boolean().optional() }).strict(),
   "generation.start": z.object({ planId: z.string().min(1).max(200), requestId: z.string().min(1).max(200) }).strict(),
   "generation.status": jobId,
   "generation.list": empty,

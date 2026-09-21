@@ -51,6 +51,7 @@ export const StyleBlock = z.object({
 
 export const CastMember = z.object({
   character_id: z.number().int(),
+  character_snapshot: Character.optional(),
   x: z.number().min(0).max(1).default(0.5),
   y: z.number().min(0).max(1).default(0.5),
   traits: z.array(z.string()).default([]),

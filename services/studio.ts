@@ -1,14 +1,18 @@
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { StudioError, APP_VERSION, PROTOCOL_VERSION, parseCommandInput, type CallContext, type Connection, type Command, type CommandInput, type CommandOutput, type Finding, type GenerationPlan, type Settings, type StudioEvent, type StudioStatus } from "../contracts/studio";
-import { BlockPreset as BlockPresetSchema, Character as CharacterSchema, Recipe as RecipeSchema, type Character, type Recipe } from "../lib/schema";
+import type { RecipeProposalChange, RecipeProposalMutationResult } from "../contracts/proposals";
+import { BlockPreset as BlockPresetSchema, Character as CharacterSchema, Recipe as RecipeSchema, type Block, type Character, type Recipe } from "../lib/schema";
 import { compose } from "../core/recipe/compose";
+import { snapshotRecipeCharacters } from "../core/recipe/characters";
 import { cloneJson } from "../core/recipe/model";
 import { validateAndFix, validateRecipe } from "../core/recipe/validate";
 import { quoteGeneration } from "../core/generation/cost";
 import { StudioSqliteStore, SqliteConflictError, SqliteNotFoundError } from "../adapters/sqlite";
 import { OutputStore } from "../adapters/files";
 import { buildParams, fetchAccount, generateImage, MODEL } from "../adapters/novelai";
+import { lookupCharacterTags } from "../adapters/danbooru";
+import { createWorkspaceBackupService, type WorkspaceBackupService } from "./workspace-backup";
 
 export type StudioServiceOptions = {
   dataDir: string;
@@ -24,6 +28,7 @@ export type StudioService = {
   call<K extends Command>(command: K, input: CommandInput<K>, context?: CallContext): Promise<CommandOutput<K>>;
   subscribe(listener: (event: StudioEvent) => void): () => void;
   readImage(id: number): Promise<Uint8Array>;
+  workspaceBackup: WorkspaceBackupService;
   close(): Promise<void>;
 };
 
@@ -32,20 +37,30 @@ const DEFAULT_SETTINGS: Settings = { language: "system", blurSensitive: true, ou
 const asInput = <K extends Command>(input: unknown) => input as CommandInput<K>;
 
 const MCP_READ_COMMANDS = new Set<Command>([
-  "status.read", "recipes.list", "recipes.get", "recipes.versions", "characters.list", "presets.list",
+  "status.read", "recipes.list", "recipes.get", "recipes.versions", "recipes.proposals.list", "recipes.proposals.create", "characters.list", "presets.list",
   "recipe.compose", "recipe.validate", "generation.status", "generation.list", "gallery.list", "gallery.get",
   "settings.get", "ai.connections.list", "setup.inspect",
 ]);
 const MCP_WRITE_COMMANDS = new Set<Command>([
-  "recipes.save", "recipes.duplicate", "recipes.delete", "characters.save", "characters.delete", "presets.save",
+  "recipes.proposals.create", "recipes.save", "recipes.duplicate", "recipes.delete", "characters.save", "characters.delete", "presets.save",
   "presets.delete", "gallery.rate", "gallery.delete", "settings.update", "ai.connections.create", "ai.connections.revoke",
   "setup.install", "setup.uninstall",
 ]);
 const MCP_GENERATION_COMMANDS = new Set<Command>(["generation.prepare", "generation.start", "generation.cancel"]);
 const MCP_IMAGE_COMMANDS = new Set<Command>(["gallery.export"]);
 const MCP_UI_ONLY_COMMANDS = new Set<Command>([
+  "recipes.proposals.apply", "recipes.proposals.undo",
+  "workspace.backup.export", "workspace.backup.inspect", "workspace.backup.restore",
   "generation.pending", "generation.approve", "credentials.set", "credentials.clear", "credentials.test", "files.importRecipe", "files.exportRecipe",
   "files.chooseOutput", "files.openOutput", "help.open",
+  "characters.tagLookup",
+]);
+const WORKSPACE_MUTATING_COMMANDS = new Set<Command>([
+  "recipes.proposals.create", "recipes.proposals.apply", "recipes.proposals.undo",
+  "recipes.save", "recipes.duplicate", "recipes.delete",
+  "characters.save", "characters.delete", "presets.save", "presets.delete",
+  "generation.prepare", "generation.approve", "generation.start", "generation.cancel",
+  "gallery.rate", "gallery.delete", "gallery.export", "settings.update",
 ]);
 
 function error(code: string, messageKey: string, params?: Record<string, string | number>, retryable?: boolean): never {
@@ -72,6 +87,43 @@ function recipeFromInput(value: Recipe): Recipe {
   const source = parsed.data.source;
   if (source !== "manual" && !source.startsWith("import:")) error("VALIDATION_FAILED", "errors.VALIDATION_FAILED");
   return parsed.data;
+}
+
+function sameJson(left: unknown, right: unknown) { return JSON.stringify(left) === JSON.stringify(right); }
+
+function diffRecipe(base: Recipe, proposed: Recipe): RecipeProposalChange[] {
+  const changes: RecipeProposalChange[] = [];
+  if (base.name !== proposed.name) changes.push({ id: randomUUID(), scope: "metadata", field: "name", before: base.name, after: proposed.name, state: "pending" });
+  if (!sameJson(base.tags, proposed.tags)) changes.push({ id: randomUUID(), scope: "metadata", field: "tags", before: cloneJson(base.tags), after: cloneJson(proposed.tags), state: "pending" });
+  if (base.rating !== proposed.rating) changes.push({ id: randomUUID(), scope: "metadata", field: "rating", before: base.rating, after: proposed.rating, state: "pending" });
+  if (base.source !== proposed.source) changes.push({ id: randomUUID(), scope: "metadata", field: "source", before: base.source, after: proposed.source, state: "pending" });
+  if (base.notes !== proposed.notes) changes.push({ id: randomUUID(), scope: "metadata", field: "notes", before: base.notes, after: proposed.notes, state: "pending" });
+
+  const sameBlockStructure = base.blocks.length === proposed.blocks.length && base.blocks.every((block, index) => block.type === proposed.blocks[index]?.type);
+  if (!sameBlockStructure) {
+    if (!sameJson(base.blocks, proposed.blocks)) changes.push({ id: randomUUID(), scope: "blocks", before: cloneJson(base.blocks), after: cloneJson(proposed.blocks), state: "pending" });
+  } else {
+    base.blocks.forEach((block, index) => {
+      const after = proposed.blocks[index];
+      if (after && !sameJson(block, after)) changes.push({ id: randomUUID(), scope: "block", index, blockType: block.type, before: cloneJson(block), after: cloneJson(after), state: "pending" });
+    });
+  }
+  return changes;
+}
+
+function proposalValue(recipe: Recipe, change: RecipeProposalChange): unknown {
+  if (change.scope === "metadata") return recipe[change.field];
+  if (change.scope === "blocks") return recipe.blocks;
+  const block = recipe.blocks[change.index];
+  return block?.type === change.blockType ? block : undefined;
+}
+
+function withProposalValue(recipe: Recipe, change: RecipeProposalChange, value: unknown): Recipe {
+  if (change.scope === "metadata") return { ...recipe, [change.field]: cloneJson(value) } as Recipe;
+  if (change.scope === "blocks") return { ...recipe, blocks: cloneJson(value as Block[]) };
+  const blocks = [...recipe.blocks];
+  blocks[change.index] = cloneJson(value as Block);
+  return { ...recipe, blocks };
 }
 
 function characterFromInput(value: Character): Character { const parsed = CharacterSchema.safeParse(value); if (!parsed.success) error("VALIDATION_FAILED", "errors.VALIDATION_FAILED"); return parsed.data; }
@@ -116,6 +168,13 @@ export function createStudioService(options: StudioServiceOptions): StudioServic
   let queue = Promise.resolve();
   let closed = false;
   let closing: Promise<void> | undefined;
+  let workspaceBackupExclusive = false;
+  let activeWorkspaceMutations = 0;
+  let workspaceMutationsIdle: Promise<void> = Promise.resolve();
+  let resolveWorkspaceMutationsIdle: (() => void) | undefined;
+  let activeBackupOperations = 0;
+  let backupIdle: Promise<void> = Promise.resolve();
+  let resolveBackupIdle: (() => void) | undefined;
 
   const emit = (event: StudioEvent) => {
     for (const listener of listeners) {
@@ -152,6 +211,29 @@ export function createStudioService(options: StudioServiceOptions): StudioServic
   const authorizePlanConnection = (plan: GenerationPlan, context?: CallContext) => {
     if (context?.source !== "mcp") return;
     if (!context.connection || !plan.connectionId || context.connection.id !== plan.connectionId) error("PERMISSION_DENIED", "errors.PERMISSION_DENIED");
+  };
+
+  const connectionWithinPlanLimits = (connection: Connection, plan: GenerationPlan) =>
+    connection.permissions.generate
+    && Number.isFinite(connection.maxImages)
+    && connection.maxImages >= plan.count
+    && plan.estimatedAnlas !== null
+    && Number.isFinite(plan.estimatedAnlas)
+    && plan.estimatedAnlas >= 0
+    && Number.isFinite(connection.maxAnlas)
+    && connection.maxAnlas >= plan.estimatedAnlas;
+
+  const canAutoApproveMcpPlan = async (plan: GenerationPlan, context?: CallContext) => {
+    if (context?.source !== "mcp" || (!dryRun && !plan.account) || findingsHaveErrors(plan.findings)) return false;
+    const suppliedConnection = context.connection;
+    if (!suppliedConnection || !connectionWithinPlanLimits(suppliedConnection, plan) || !options.getConnection) return false;
+
+    let liveConnection: Connection | null;
+    try { liveConnection = await options.getConnection(suppliedConnection.id); }
+    catch { return false; }
+    return !!liveConnection
+      && liveConnection.id === suppliedConnection.id
+      && connectionWithinPlanLimits(liveConnection, plan);
   };
 
   const checkPlanConnection = async (plan: GenerationPlan) => {
@@ -248,9 +330,109 @@ export function createStudioService(options: StudioServiceOptions): StudioServic
     return new OutputStore(stored.outputRoot).read(stored.file);
   };
 
+  const hasActiveGeneration = () => !!store.db.prepare("SELECT 1 FROM jobs WHERE state IN ('queued','running') LIMIT 1").get();
+  const acquireWorkspaceExclusive = () => {
+    if (workspaceBackupExclusive || activeWorkspaceMutations > 0 || hasActiveGeneration()) {
+      error("WORKSPACE_BUSY", "errors.WORKSPACE_BUSY", undefined, true);
+    }
+    workspaceBackupExclusive = true;
+    let released = false;
+    return {
+      release() {
+        if (released) return;
+        released = true;
+        workspaceBackupExclusive = false;
+      },
+    };
+  };
+  const withBackupOperation = async <T>(work: () => Promise<T>): Promise<T> => {
+    if (closed) error("APP_CLOSED", "errors.APP_CLOSED");
+    if (activeBackupOperations === 0) backupIdle = new Promise<void>(resolve => { resolveBackupIdle = resolve; });
+    activeBackupOperations++;
+    try { return await work(); }
+    finally {
+      activeBackupOperations--;
+      if (activeBackupOperations === 0) {
+        resolveBackupIdle?.();
+        resolveBackupIdle = undefined;
+      }
+    }
+  };
+  const backup = createWorkspaceBackupService({
+    store,
+    outputRoot: () => outputRoot,
+    readImage: async id => {
+      try { return await readImage(id); }
+      catch (cause) {
+        const code = typeof cause === "object" && cause !== null && "code" in cause ? cause.code : undefined;
+        if (cause instanceof SqliteNotFoundError || code === "ENOENT") return null;
+        throw cause;
+      }
+    },
+    hasActiveGeneration,
+    acquireExclusive: acquireWorkspaceExclusive,
+  });
+  const workspaceBackup: WorkspaceBackupService = {
+    withExclusive: work => withBackupOperation(() => backup.withExclusive(work)),
+    exportSnapshot: () => backup.exportSnapshot(),
+    inspect: (snapshot, input) => withBackupOperation(() => backup.inspect(snapshot, input)),
+    restore: (snapshot, input) => withBackupOperation(async () => {
+      const result = await backup.restore(snapshot, input);
+      workspaceChanged("recipes");
+      workspaceChanged("characters");
+      workspaceChanged("presets");
+      workspaceChanged("gallery");
+      return result;
+    }),
+  };
+
+  const mutateProposal = (operation: "apply" | "undo", input: { proposalId: string; changeIds: string[]; expectedVersion: number }): RecipeProposalMutationResult => {
+    const proposal = store.getRecipeProposal(input.proposalId);
+    const currentStored = store.getRecipe(proposal.recipeId);
+    const current = recipeFromInput(currentStored);
+    const byId = new Map(proposal.changes.map(change => [change.id, change]));
+    const selected = input.changeIds.map(id => byId.get(id));
+    if (selected.some(change => !change)) error("VALIDATION_FAILED", "errors.VALIDATION_FAILED");
+    const changes = selected as RecipeProposalChange[];
+    if (operation === "undo" && changes.some(change => change.state === "pending")) error("VALIDATION_FAILED", "errors.VALIDATION_FAILED");
+
+    const alreadyInTargetState = changes.every(change => operation === "apply" ? change.state === "applied" : change.state === "undone");
+    if (alreadyInTargetState) {
+      if (currentStored.version !== proposal.applicationVersion) error("VERSION_CONFLICT", "errors.VERSION_CONFLICT", undefined, true);
+      const targetMatches = changes.every(change => sameJson(proposalValue(current, change), operation === "apply" ? change.after : change.before));
+      if (!targetMatches) error("VERSION_CONFLICT", "errors.VERSION_CONFLICT", undefined, true);
+      return { proposal: store.getRecipeProposal(proposal.id), recipe: currentStored };
+    }
+
+    if (operation === "apply" && Date.parse(proposal.expiresAt) <= Date.now()) error("PROPOSAL_EXPIRED", "errors.PROPOSAL_EXPIRED", undefined, true);
+    if (input.expectedVersion !== currentStored.version || proposal.applicationVersion !== currentStored.version) error("VERSION_CONFLICT", "errors.VERSION_CONFLICT", undefined, true);
+
+    let next = current;
+    const nextChanges = cloneJson(proposal.changes);
+    for (const change of changes) {
+      if (operation === "apply" && change.state === "applied") continue;
+      if (operation === "undo" && change.state === "undone") continue;
+      const expected = operation === "apply" ? change.before : change.after;
+      const target = operation === "apply" ? change.after : change.before;
+      if (!sameJson(proposalValue(next, change), expected)) error("VERSION_CONFLICT", "errors.VERSION_CONFLICT", undefined, true);
+      next = withProposalValue(next, change, target);
+      const changeIndex = nextChanges.findIndex(item => item.id === change.id);
+      nextChanges[changeIndex] = { ...nextChanges[changeIndex], state: operation === "apply" ? "applied" : "undone" } as RecipeProposalChange;
+    }
+    const committed = store.commitRecipeProposal({
+      proposalId: proposal.id,
+      expectedVersion: currentStored.version,
+      recipe: next,
+      changes: nextChanges,
+      note: proposal.reason.slice(0, 2000),
+    });
+    emit({ type: "proposal.changed", recipeId: proposal.recipeId, proposalId: proposal.id });
+    workspaceChanged("recipes", [proposal.recipeId]);
+    return committed;
+  };
+
   const command = async <K extends Command>(name: K, input: CommandInput<K>, context?: CallContext): Promise<CommandOutput<K>> => {
     if (closed) error("APP_CLOSED", "errors.APP_CLOSED");
-    authorizeContext(name, context);
     switch (name) {
       case "status.read": {
         const settings = readSettings();
@@ -271,7 +453,44 @@ export function createStudioService(options: StudioServiceOptions): StudioServic
       }
       case "recipes.delete": { const id = asInput<"recipes.delete">(input).id; const deleted = store.deleteRecipe(id); if (deleted) workspaceChanged("recipes", [id]); return { deleted } as CommandOutput<K>; }
       case "recipes.versions": return store.listRecipeVersions(asInput<"recipes.versions">(input).id) as CommandOutput<K>;
+      case "recipes.proposals.create": {
+        const body = asInput<"recipes.proposals.create">(input);
+        if (context?.source !== "mcp" || !context.connection) error("PERMISSION_DENIED", "errors.PERMISSION_DENIED");
+        const base = store.getRecipe(body.recipeId);
+        const proposed = recipeFromInput(body.proposedRecipe);
+        if (proposed.id !== undefined && proposed.id !== body.recipeId) error("VALIDATION_FAILED", "errors.VALIDATION_FAILED");
+        const target = { ...proposed, id: body.recipeId, created_at: base.created_at, updated_at: base.updated_at };
+        const changes = diffRecipe(base, target);
+        if (!changes.length) error("VALIDATION_FAILED", "errors.VALIDATION_FAILED");
+        const proposal = store.createRecipeProposal({
+          id: randomUUID(),
+          recipeId: body.recipeId,
+          expectedVersion: body.expectedVersion,
+          reason: body.reason,
+          connectionId: context.connection.id,
+          connectionName: context.connection.name,
+          expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+          changes,
+        });
+        emit({ type: "proposal.changed", recipeId: body.recipeId, proposalId: proposal.id });
+        return proposal as CommandOutput<K>;
+      }
+      case "recipes.proposals.list": {
+        const body = asInput<"recipes.proposals.list">(input);
+        const connectionId = context?.source === "mcp" ? context.connection?.id : undefined;
+        return store.listRecipeProposals({ recipeId: body.recipeId, connectionId }) as CommandOutput<K>;
+      }
+      case "recipes.proposals.apply": {
+        return mutateProposal("apply", asInput<"recipes.proposals.apply">(input)) as CommandOutput<K>;
+      }
+      case "recipes.proposals.undo": {
+        return mutateProposal("undo", asInput<"recipes.proposals.undo">(input)) as CommandOutput<K>;
+      }
       case "characters.list": return store.listCharacters(asInput<"characters.list">(input)) as CommandOutput<K>;
+      case "characters.tagLookup": {
+        try { return await lookupCharacterTags(asInput<"characters.tagLookup">(input), fetchImpl) as CommandOutput<K>; }
+        catch { return error("TAG_LOOKUP_FAILED", "errors.TAG_LOOKUP_FAILED", undefined, true); }
+      }
       case "characters.save": { const saved = store.saveCharacter(characterFromInput(asInput<"characters.save">(input).character)); workspaceChanged("characters", [saved.id]); return saved as CommandOutput<K>; }
       case "characters.delete": { const id = asInput<"characters.delete">(input).id; const deleted = store.deleteCharacter(id); if (deleted) workspaceChanged("characters", [id]); return { deleted } as CommandOutput<K>; }
       case "presets.list": return store.listPresets(asInput<"presets.list">(input)) as CommandOutput<K>;
@@ -282,14 +501,38 @@ export function createStudioService(options: StudioServiceOptions): StudioServic
         const body = asInput<"recipe.validate">(input); const recipe = recipeFromInput(body.recipe); const result = validateAndFix(recipe, resolveCharacters(recipe), body.fixes ?? []); return result as CommandOutput<K>;
       }
       case "generation.prepare": {
-        const body = asInput<"generation.prepare">(input); const recipe = recipeFromInput(body.recipe); const characters = resolveCharacters(recipe); const findings = validateRecipe(recipe, characters); const composed = compose(recipe, characters); const account = await getAccount(); const quote = quoteGeneration({ width: composed.settings.width, height: composed.settings.height, steps: composed.settings.steps }, body.count, account); const fixedSeed = body.seed ?? (composed.settings.seed_policy === "fixed" ? composed.settings.seed : undefined); const seeds = Array.from({ length: body.count }, (_, index) => stableSeed(fixedSeed, index)); const connection = context?.source === "mcp" ? context.connection : undefined; const plan: GenerationPlan = { id: randomUUID(), recipe: cloneJson(recipe), count: body.count, seeds, estimatedAnlas: quote.estimatedAnlas, findings, expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(), approved: false, account, ...(connection ? { connectionId: connection.id, connectionName: connection.name } : {}) }; store.savePlan(plan, composed as unknown as Record<string, unknown>); emit({ type: "generation.prepared", plan }); return plan as CommandOutput<K>;
+        const body = asInput<"generation.prepare">(input);
+        const recipe = recipeFromInput(body.recipe);
+        const characters = resolveCharacters(recipe);
+        const planRecipe = snapshotRecipeCharacters(recipe, characters);
+        const findings = validateRecipe(planRecipe, characters);
+        const composed = compose(planRecipe, characters);
+        const account = await getAccount();
+        const estimatedAnlas = dryRun
+          ? 0
+          : quoteGeneration({ width: composed.settings.width, height: composed.settings.height, steps: composed.settings.steps }, body.count, account).estimatedAnlas;
+        const fixedSeed = body.seed ?? (composed.settings.seed_policy === "fixed" ? composed.settings.seed : undefined);
+        const seeds = Array.from({ length: body.count }, (_, index) => stableSeed(fixedSeed, index));
+        const connection = context?.source === "mcp" ? context.connection : undefined;
+        const plan: GenerationPlan = {
+          id: randomUUID(), recipe: cloneJson(planRecipe), count: body.count, seeds, estimatedAnlas, findings,
+          expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(), approved: false, account,
+          ...(connection ? { connectionId: connection.id, connectionName: connection.name } : {}),
+        };
+        plan.approved = await canAutoApproveMcpPlan(plan, context);
+        store.savePlan(plan, composed as unknown as Record<string, unknown>);
+        emit({ type: "generation.prepared", plan });
+        return plan as CommandOutput<K>;
       }
       case "generation.pending": return store.listPendingPlans() as CommandOutput<K>;
       case "generation.approve": {
         if (context?.source !== "ui") error("PERMISSION_DENIED", "errors.PERMISSION_DENIED");
-        const planId = asInput<"generation.approve">(input).planId;
+        const body = asInput<"generation.approve">(input);
+        const planId = body.planId;
         const plan = store.getPlan(planId);
         if (new Date(plan.expiresAt).getTime() <= Date.now()) error("PLAN_EXPIRED", "errors.PLAN_EXPIRED", undefined, true);
+        if (plan.estimatedAnlas === null) error("COST_UNKNOWN", "errors.COST_UNKNOWN", undefined, true);
+        if (plan.estimatedAnlas > 0 && body.allowPaid !== true) error("PAID_CONFIRMATION_REQUIRED", "errors.PAID_CONFIRMATION_REQUIRED");
         return store.approvePlan(planId) as CommandOutput<K>;
       }
       case "generation.start": {
@@ -355,19 +598,42 @@ export function createStudioService(options: StudioServiceOptions): StudioServic
   }
 
   const call = async <K extends Command>(name: K, input: CommandInput<K>, context?: CallContext): Promise<CommandOutput<K>> => {
-    try { return await command(name, parseCommandInput(name, input), context); } catch (cause) { throw asStudioError(cause); }
+    let releaseMutation: (() => void) | undefined;
+    try {
+      const parsed = parseCommandInput(name, input);
+      authorizeContext(name, context);
+      if (closed) error("APP_CLOSED", "errors.APP_CLOSED");
+      if (WORKSPACE_MUTATING_COMMANDS.has(name)) {
+        if (workspaceBackupExclusive) error("WORKSPACE_BUSY", "errors.WORKSPACE_BUSY", undefined, true);
+        if (activeWorkspaceMutations === 0) workspaceMutationsIdle = new Promise<void>(resolve => { resolveWorkspaceMutationsIdle = resolve; });
+        activeWorkspaceMutations++;
+        let released = false;
+        releaseMutation = () => {
+          if (released) return;
+          released = true;
+          activeWorkspaceMutations--;
+          if (activeWorkspaceMutations === 0) {
+            resolveWorkspaceMutationsIdle?.();
+            resolveWorkspaceMutationsIdle = undefined;
+          }
+        };
+      }
+      return await command(name, parsed, context);
+    } catch (cause) { throw asStudioError(cause); }
+    finally { releaseMutation?.(); }
   };
 
   return {
     call,
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     readImage,
+    workspaceBackup,
     close() {
       if (closing) return closing;
       closed = true;
       store.requestStopAll();
-      // Preserve the result of the current request before closing SQLite.
-      closing = queue.then(() => store.close());
+      // Wait for commands that may still append work to `queue`, then capture the final queue.
+      closing = Promise.all([workspaceMutationsIdle, backupIdle]).then(() => queue).then(() => store.close());
       return closing;
     },
   };

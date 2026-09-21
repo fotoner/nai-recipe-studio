@@ -6,7 +6,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { ConnectionStore } from "../../desktop/main/connections";
 import { getProfilePaths } from "../../desktop/main/paths";
-import { quitApplication } from "./lifecycle";
+import { keepTestAppInBackground, quitApplication } from "./lifecycle";
 
 let application: ElectronApplication;
 let profile: string;
@@ -17,6 +17,7 @@ test.beforeEach(async () => {
     args: [path.resolve("dist/main/index.js"), "--lang=en", "--disable-gpu"],
     env: { ...process.env, NAI_STUDIO_PROFILE: profile, NAI_STUDIO_DRY_RUN: "1", NAI_STUDIO_CLIENT_HOME: path.join(profile, "client-home") },
   });
+  await keepTestAppInBackground(application);
 });
 
 test("dry-run generation produces gallery images through the sandboxed protocol", async () => {
@@ -192,6 +193,7 @@ test("development loads the live Vite renderer with working IPC and Tailwind", a
       args: [path.resolve("dist/main/index.js"), "--lang=en", "--disable-gpu"],
       env: { ...process.env, ELECTRON_RENDERER_URL: url, NAI_STUDIO_PROFILE: profile, NAI_STUDIO_DRY_RUN: "1", NAI_STUDIO_CLIENT_HOME: path.join(profile, "client-home") },
     });
+    await keepTestAppInBackground(application);
     const page = await application.firstWindow();
     await page.waitForLoadState("domcontentloaded");
     expect(page.url()).toBe(url);
@@ -200,4 +202,123 @@ test("development loads the live Vite renderer with working IPC and Tailwind", a
     await expect.poll(() => page.locator("aside").first().evaluate(element => element.getBoundingClientRect().width)).toBe(208);
     expect(await page.evaluate(() => window.studio.call("recipes.list", {}))).toMatchObject({ total: 0 });
   } finally { await server.close(); }
+});
+
+test("recipe generation stays in the editor, uses the draft, and refreshes inline results and history", async () => {
+  const page = await application.firstWindow();
+  await page.waitForLoadState("domcontentloaded");
+  const recipeId = await page.evaluate(async () => {
+    await window.studio.call("settings.update", { language: "en" });
+    const character = await window.studio.call("characters.save", { character: { display_name: "Synthetic character", tag: "synthetic character", series: "", gender: "girl", age_flag: "adult", locked: false, fixed_traits: [], default_x: 0.5, default_y: 0.5, notes: "" } });
+    const recipe = await window.studio.call("recipes.save", { recipe: { name: "Saved synthetic recipe", tags: [], rating: 0, source: "manual", notes: "", blocks: [
+      { type: "cast", members: [{ character_id: character.id, x: 0.5, y: 0.5, traits: [], outfit: [], expression: [], uc: [], interactions: [] }], layout_preset: "solo", auto_leak_guard: true },
+      { type: "scene", tags: ["blue sky"], text: "" },
+      { type: "settings", width: 832, height: 1216, steps: 28, scale: 5, rescale: 0.3, sampler: "k_euler_ancestral", schedule: "karras", seed_policy: "random", quality_preset: "none", uc_preset: "heavy" },
+    ] } });
+    window.location.hash = `#/recipe/${recipe.id}`;
+    return recipe.id;
+  });
+  await page.getByLabel("Recipe name", { exact: true }).fill("Unsaved generation snapshot");
+  await page.getByRole("region", { name: "Recipe details" }).getByRole("button", { name: "Generate", exact: true }).click();
+  await page.getByLabel("Images per run", { exact: true }).fill("2");
+  await page.getByRole("button", { name: "Generate 2 images", exact: true }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  const results = page.getByRole("region", { name: "Current generation results" });
+  await expect(results.getByRole("button", { name: /Select result/ })).toHaveCount(2);
+  await expect(page.getByRole("button", { name: /Image #\d+, seed/ })).toHaveCount(2);
+  await expect.poll(() => page.evaluate(() => window.location.hash)).toBe(`#/recipe/${recipeId}`);
+  const saved = await page.evaluate(id => window.studio.call("recipes.get", { id }), recipeId);
+  expect(saved.name).toBe("Saved synthetic recipe");
+  const gallery = await page.evaluate(id => window.studio.call("gallery.list", { recipeId: id }), recipeId);
+  expect(gallery.items).toHaveLength(2);
+  expect(gallery.items.every(item => item.recipe.name === "Unsaved generation snapshot")).toBe(true);
+  if (process.platform === "darwin") {
+    const chrome = page.getByTestId("mac-titlebar-drag-region");
+    await expect(chrome).toBeVisible();
+    expect(await chrome.evaluate(element => getComputedStyle(element).getPropertyValue("app-region"))).toBe("drag");
+    expect(await chrome.evaluate(element => element.getBoundingClientRect().height)).toBe(40);
+  }
+  await page.screenshot({ path: "test-results/recipe-generation-inline.png", fullPage: true });
+  await page.getByRole("button", { name: "Save", exact: true }).first().click();
+  await expect(page.getByRole("region", { name: "Recipe details" }).getByRole("button", { name: "Save", exact: true })).toBeDisabled();
+});
+
+test("MCP change proposals keep recipes unchanged until the app selectively applies them", async () => {
+  const page = await application.firstWindow();
+  await page.waitForLoadState("domcontentloaded");
+  const { recipe, connection } = await page.evaluate(async () => {
+    const recipe = await window.studio.call("recipes.save", { recipe: { name: "Before AI proposal", tags: [], rating: 0, source: "manual", notes: "", blocks: [{ type: "scene", tags: ["indoors"], text: "" }] } });
+    const connection = await window.studio.call("ai.connections.create", { name: "Synthetic proposal client", permissions: { read: true, write: true, generate: false, images: false }, maxImages: 0, maxAnlas: 0 });
+    return { recipe, connection };
+  });
+  const paths = getProfilePaths(profile);
+  const tokens = new ConnectionStore(path.join(paths.secure, "connections.json"));
+  const client = new Client({ name: "proposal-integration-test", version: "1.0.0" });
+  const transport = new StdioClientTransport({
+    command: path.resolve("runtime/mcp", process.platform === "win32" ? "node.exe" : "node"),
+    args: [path.resolve("dist/mcp/index.cjs"), "--endpoint", paths.ipcEndpoint, "--token-file", tokens.tokenPath(connection.id)], stderr: "pipe",
+  });
+  try {
+    await client.connect(transport);
+    const result = await client.callTool({ name: "recipe_propose_changes", arguments: { recipeId: recipe.id, expectedVersion: recipe.version, proposedRecipe: { ...recipe, name: "AI name", notes: "Separate proposed note" }, reason: "Review two independent changes" } });
+    expect(result.isError).not.toBe(true);
+    const proposal = result.structuredContent as { id: string; changes: Array<{ id: string; field?: string }> };
+    expect(await page.evaluate(id => window.studio.call("recipes.get", { id }), recipe.id)).toEqual(recipe);
+    const changeId = proposal.changes.find(change => change.field === "name")!.id;
+    const applied = await page.evaluate(input => window.studio.call("recipes.proposals.apply", input), { proposalId: proposal.id, changeIds: [changeId], expectedVersion: 1 });
+    expect(applied.recipe).toMatchObject({ name: "AI name", notes: "", version: 2 });
+    const listed = await client.callTool({ name: "recipe_proposals_list", arguments: { recipeId: recipe.id } });
+    expect(listed.isError).not.toBe(true);
+    expect(JSON.stringify(listed.structuredContent)).toContain('"partial"');
+    const undone = await page.evaluate(input => window.studio.call("recipes.proposals.undo", input), { proposalId: proposal.id, changeIds: [changeId], expectedVersion: 2 });
+    expect(undone.recipe).toMatchObject({ name: "Before AI proposal", notes: "", version: 3 });
+    const tools = await client.listTools();
+    expect(tools.tools.some(tool => /proposals_apply|proposals_undo|workspace_backup/.test(tool.name))).toBe(false);
+  } finally { await client.close(); }
+});
+
+test("workspace backup restores linked images and metadata without replacing existing work", async () => {
+  const page = await application.firstWindow();
+  await page.waitForLoadState("domcontentloaded");
+  const job = await page.evaluate(async () => {
+    await window.studio.call("settings.update", { language: "en" });
+    const recipe = await window.studio.call("recipes.save", { recipe: { name: "Backup fixture", tags: [], rating: 0, source: "manual", notes: "original", blocks: [{ type: "scene", tags: ["blue sky"], text: "" }] } });
+    const plan = await window.studio.call("generation.prepare", { recipe, count: 1, seed: 77 });
+    await window.studio.call("generation.approve", { planId: plan.id });
+    return window.studio.call("generation.start", { planId: plan.id, requestId: "backup-fixture" });
+  });
+  await expect.poll(() => page.evaluate(id => window.studio.call("generation.status", { id }).then(job => job.state), job.id)).toBe("completed");
+  await page.evaluate(async () => {
+    const image = (await window.studio.call("gallery.list", {})).items[0];
+    await window.studio.call("gallery.rate", { id: image.id, score: 4, liked: true, note: "portable rating" });
+  });
+  const archivePath = path.join(profile, "workspace.naistudio");
+  await application.evaluate(({ dialog }, filePath) => {
+    dialog.showSaveDialog = async () => ({ canceled: false, filePath });
+    dialog.showOpenDialog = async () => ({ canceled: false, filePaths: [filePath] });
+  }, archivePath);
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  const backup = page.getByTestId("workspace-backup");
+  await backup.getByRole("button", { name: "Create backup", exact: true }).click();
+  await expect(backup.getByText("Backup saved. Missing image files: 0.", { exact: true })).toBeVisible();
+  const existing = await page.evaluate(async () => {
+    const recipe = await window.studio.call("recipes.get", { id: 1 });
+    return window.studio.call("recipes.save", { recipe: { ...recipe, notes: "existing work after backup" }, expectedVersion: recipe.version });
+  });
+  await backup.getByRole("button", { name: "Review backup", exact: true }).click();
+  await expect(backup.getByRole("region", { name: "Backup contents", exact: true })).toBeVisible();
+  await backup.getByRole("button", { name: "Restore workspace", exact: true }).click();
+  await expect(backup.getByText("Backup restored. Existing data was kept.", { exact: true })).toBeVisible();
+  const result = await page.evaluate(async () => ({ original: await window.studio.call("recipes.get", { id: 1 }), recipes: await window.studio.call("recipes.list", {}), gallery: await window.studio.call("gallery.list", {}) }));
+  expect(result.original).toEqual(existing);
+  expect(result.recipes.total).toBe(2);
+  expect(result.gallery.total).toBe(2);
+  const imported = result.gallery.items.find(item => item.id !== 1)!;
+  expect(imported).toMatchObject({ recipe_id: 2, seed: 77, score: 4, liked: true, note: "portable rating" });
+  await backup.getByRole("button", { name: "Review backup", exact: true }).click();
+  await expect(backup.getByText("This backup has already been restored.", { exact: true })).toBeVisible();
+  await expect(backup.getByRole("button", { name: "Restore workspace", exact: true })).toBeDisabled();
+  await page.getByRole("button", { name: "Gallery", exact: true }).click();
+  await expect(page.locator('[data-testid="gallery-card"] img')).toHaveCount(2);
+  await expect.poll(() => page.locator('[data-testid="gallery-card"] img').evaluateAll(nodes => nodes.every(node => (node as HTMLImageElement).naturalWidth > 0))).toBe(true);
 });

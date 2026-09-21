@@ -16,6 +16,7 @@ import { Block, type BlockPreset, type Character } from "@/lib/schema";
 import { blockKey } from "@/core/palette";
 import { Lightbox } from "./Lightbox";
 import { GalleryFilters } from "./GalleryFilters";
+import type { GenerationDraftFromImage } from "@/core/recipe/from-generation";
 
 const CORE_PALETTES = ["style", "scene", "composition", "outfit"] as const;
 type PaletteIndex = { byId: Map<number, BlockPreset>; byKey: Map<string, BlockPreset> };
@@ -95,7 +96,7 @@ function Item({ item, blur, palettes, onOpen, onDelete, selecting, selected, onS
   );
 }
 
-export function GalleryGrid({ items, recipes, characters = [], presets = [], query, onQuery, onDelete, onExport, onRate, onOpenRecipe, blur = false, openId, loading = false }: {
+export function GalleryGrid({ items, recipes, characters = [], presets = [], query, onQuery, onDelete, onExport, onRate, onOpenRecipe, onContinueFromGeneration, blur = false, openId, loading = false }: {
   items: GalleryItem[];
   recipes: { id: number; name: string }[];
   characters?: Character[];
@@ -104,6 +105,7 @@ export function GalleryGrid({ items, recipes, characters = [], presets = [], que
   onExport: (item: GalleryItem, includeMetadata: boolean) => Promise<void>;
   onRate: (item: GalleryItem, patch: { score?: number | null; liked?: boolean; note?: string }) => Promise<void>;
   onOpenRecipe: (id: number) => void;
+  onContinueFromGeneration?: (draft: GenerationDraftFromImage) => void;
   query: GalleryQuery;
   onQuery: (q: GalleryQuery) => void;
   /** delete one or many generations; the parent refreshes the list */
@@ -135,7 +137,7 @@ export function GalleryGrid({ items, recipes, characters = [], presets = [], que
   });
   return (
     <div className="flex flex-col gap-3">
-      <Lightbox items={items} index={open} blur={blur} onClose={() => setOpen(null)} onIndex={setOpen} onDelete={onDelete ? removeOne : undefined} onExport={onExport} onRate={onRate} onOpenRecipe={onOpenRecipe} />
+      <Lightbox items={items} index={open} blur={blur} onClose={() => setOpen(null)} onIndex={setOpen} onDelete={onDelete ? removeOne : undefined} onExport={onExport} onRate={onRate} onOpenRecipe={onOpenRecipe} onContinueFromGeneration={onContinueFromGeneration} />
       <div className="flex items-start gap-2 border-b border-border pb-3">
         <GalleryFilters characters={characters} presets={presets} recipes={recipes} query={query}
           onQuery={q => { setOpen(null); setSelecting(false); setSel(new Set()); onQuery(q); }} />

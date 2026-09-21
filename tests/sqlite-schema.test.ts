@@ -10,11 +10,12 @@ async function tempProfile() {
 }
 
 describe("SQLite schema boundary", () => {
-  it("marks a fresh profile as schema version 1", async () => {
+  it("marks a fresh profile as schema version 2", async () => {
     const dataDir = await tempProfile();
     const store = new StudioSqliteStore(dataDir);
     try {
-      expect(Number(store.db.pragma("user_version", { simple: true }))).toBe(1);
+      expect(Number(store.db.pragma("user_version", { simple: true }))).toBe(2);
+      expect(store.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='recipe_proposals'").get()).toEqual({ name: "recipe_proposals" });
     } finally {
       store.close();
       await rm(dataDir, { recursive: true, force: true });

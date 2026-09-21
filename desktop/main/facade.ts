@@ -8,6 +8,7 @@ import { ConnectionStore } from "./connections";
 import { PlatformError } from "./errors";
 import { SetupManager } from "../../services/setup";
 import { externalUrl } from "./window";
+import type { WorkspaceBackupCoordinator } from "./workspace-backup";
 
 export type MainFacadeOptions = {
   service: StudioService;
@@ -22,6 +23,7 @@ export type MainFacadeOptions = {
   };
   shell?: { openExternal(url: string): Promise<unknown>; openPath(path: string): Promise<string> };
   outputPath: string;
+  workspaceBackup?: WorkspaceBackupCoordinator;
   readImage?: (id: number) => Promise<Uint8Array>;
 };
 
@@ -29,6 +31,14 @@ export class MainCommandFacade {
   constructor(private readonly options: MainFacadeOptions) {}
 
   async call<K extends Command>(command: K, input: CommandInput<K>, context: PlatformCallContext): Promise<CommandOutput<K>> {
+    if (command.startsWith("workspace.backup.")) {
+      if (context.source !== "ui") throw new PlatformError("PERMISSION_DENIED");
+      const backup = this.options.workspaceBackup;
+      if (!backup) throw new PlatformError("NOT_SUPPORTED");
+      if (command === "workspace.backup.export") return await backup.export() as CommandOutput<K>;
+      if (command === "workspace.backup.inspect") return await backup.inspect((input as { stagingId?: string }).stagingId) as CommandOutput<K>;
+      if (command === "workspace.backup.restore") return await backup.restore((input as { stagingId: string }).stagingId) as CommandOutput<K>;
+    }
     if (command === "credentials.set") {
       await this.options.credentials.set("novelai", (input as { token: string }).token);
       return { connected: true } as CommandOutput<K>;

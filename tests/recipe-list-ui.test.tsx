@@ -18,7 +18,7 @@ it("shows later library pages and applies only selected lint fixes with the insp
     throw new Error(command);
   });
   const client = { call, subscribe: () => () => undefined } as unknown as StudioClient;
-  render(<RecipesFeature client={client} onOpenRecipe={vi.fn()} onOpenGeneration={vi.fn()} />);
+  render(<RecipesFeature client={client} onOpenRecipe={vi.fn()} />);
   expect(await screen.findByText("Sample 3")).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Check" }));
   fireEvent.click(await screen.findByRole("button", { name: "Select all (1)" }));

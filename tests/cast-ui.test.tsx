@@ -22,14 +22,18 @@ const character = (id: number, tag: string): Character => ({
   notes: "",
 });
 
-function fakeClient(preset: StoredPreset): StudioClient {
+function fakeClient(preset: StoredPreset) {
+  const call = vi.fn(async (command: string) => {
+    if (command === "presets.list") return { items: [preset], total: 1 };
+    if (command === "gallery.list") return { items: [], total: 0 };
+    throw new Error(`Unexpected command ${command}`);
+  }) as StudioClient["call"];
   return {
-    call: vi.fn(async (command: string) => {
-      if (command === "presets.list") return { items: [preset], total: 1 };
-      if (command === "gallery.list") return { items: [], total: 0 };
-      throw new Error(`Unexpected command ${command}`);
-    }) as StudioClient["call"],
-    subscribe: vi.fn(() => () => undefined),
+    client: {
+      call,
+      subscribe: vi.fn(() => () => undefined),
+    } as StudioClient,
+    call,
   };
 }
 
@@ -67,12 +71,44 @@ describe("standalone cast editor", () => {
       notes: "A reusable outfit",
       created_at: "2026-09-18T09:00:00.000Z",
       updated_at: "2026-09-18T09:00:00.000Z",
+      usage: 245,
+      examples: Array.from({ length: 4 }, (_, index) => ({
+        id: 501 + index,
+        recipe_id: null,
+        seed: 87 + index,
+        created_at: `2026-09-${19 - index}T09:00:00.000Z`,
+        rating: 0,
+        url: `data:image/png;base64,picker-example-${501 + index}`,
+      })),
     };
     const onPick = vi.fn();
-    render(<BlockPicker client={fakeClient(preset)} type="outfit" onOpenChange={vi.fn()} onPick={onPick} />);
+    const { client, call } = fakeClient(preset);
+    render(<BlockPicker client={client} type="outfit" onOpenChange={vi.fn()} onPick={onPick} />);
 
     fireEvent.click(await screen.findByRole("button", { name: /Neutral outfit/ }));
     expect(onPick).toHaveBeenCalledWith(expect.objectContaining({ type: "outfit", preset_id: 11, tags: ["jacket"] }));
+    expect(screen.getByText("245장")).toBeInTheDocument();
+    expect(document.body.querySelector("img")?.getAttribute("src")).toBe("data:image/png;base64,picker-example-501");
+    expect(call).not.toHaveBeenCalledWith("gallery.list", expect.anything());
+  });
+
+  it("keeps a preset usable without optional aggregate metadata", async () => {
+    const preset: StoredPreset = {
+      id: 12,
+      type: "outfit",
+      name: "Fallback outfit",
+      block: { type: "outfit", tags: ["coat"], text: "" },
+      tags: [],
+      notes: "",
+      created_at: "2026-09-18T09:00:00.000Z",
+      updated_at: "2026-09-18T09:00:00.000Z",
+    };
+    const { client, call } = fakeClient(preset);
+    render(<BlockPicker client={client} type="outfit" onOpenChange={vi.fn()} onPick={vi.fn()} />);
+
+    expect(await screen.findByRole("button", { name: /Fallback outfit/ })).toBeInTheDocument();
+    expect(document.body.querySelector("img")).toBeNull();
+    expect(call).not.toHaveBeenCalledWith("gallery.list", expect.anything());
   });
 
   it("updates the cast block for layout choices and dragged coordinates", async () => {

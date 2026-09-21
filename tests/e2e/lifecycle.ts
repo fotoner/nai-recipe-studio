@@ -29,3 +29,14 @@ export async function quitApplication(application: ElectronApplication) {
   }
   await application.close();
 }
+
+/** Keep synthetic UI tests from taking keyboard input from the user's desktop. */
+export async function keepTestAppInBackground(application: ElectronApplication) {
+  await application.firstWindow();
+  await application.evaluate(({ BrowserWindow }) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      window.setFocusable(false);
+      window.hide();
+    }
+  });
+}

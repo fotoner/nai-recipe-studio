@@ -36,6 +36,7 @@ export type TagBlock = Extract<Block, { tags: string[] }>;
 export type ViewRoute =
   | { page: "recipes" }
   | { page: "recipe"; id: number }
+  | { page: "draft"; id: string }
   | { page: "generation" }
   | { page: "gallery" }
   | { page: "palette" }
@@ -108,6 +109,7 @@ export function parseRoute(hash: string): ViewRoute {
   const path = hash.split("?")[0].replace(/^#\/?/, "").replace(/\/$/, "") || "recipes";
   const [section, id] = path.split("/");
   if (section === "recipe" && id && /^\d+$/.test(id)) return { page: "recipe", id: Number(id) };
+  if (section === "draft" && id && /^[a-zA-Z0-9-]{1,80}$/.test(id)) return { page: "draft", id };
   if (section === "generate") return { page: "generation" };
   if (section === "gallery") return { page: "gallery" };
   if (section === "palette") return { page: "palette" };
@@ -115,4 +117,4 @@ export function parseRoute(hash: string): ViewRoute {
   if (section === "settings") return { page: "settings" };
   return { page: "recipes" };
 }
-export function routeHash(route: ViewRoute): string { return route.page === "recipe" ? `#/recipe/${route.id}` : route.page === "generation" ? "#/generate" : `#/${route.page}`; }
+export function routeHash(route: ViewRoute): string { return route.page === "draft" ? `#/draft/${route.id}` : route.page === "recipe" ? `#/recipe/${route.id}` : route.page === "generation" ? "#/generate" : `#/${route.page}`; }

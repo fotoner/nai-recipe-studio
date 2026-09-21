@@ -6,5 +6,7 @@
   "closeTitle": "Close the window?",
   "closeDescription": "There are unsaved changes or work in progress. Do you want to close this window?",
   "keepOpen": "Keep working",
-  "discardAndClose": "Close window"
+  "discardAndClose": "Close window",
+  "exportWorkspaceBackup": "Create workspace backup",
+  "importWorkspaceBackup": "Review workspace backup"
 }

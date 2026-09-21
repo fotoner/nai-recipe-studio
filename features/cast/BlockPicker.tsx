@@ -6,7 +6,7 @@ export { sortLibraryItems } from "@/lib/library-sort";
 import * as React from "react";
 import { ImageOff, LayoutTemplate, Loader2, Plus, Search } from "lucide-react";
 import type { BlockType } from "@/lib/schema";
-import type { GalleryItem, StudioClient, StoredPreset } from "@/contracts/studio";
+import type { GenerationExample, StudioClient, StoredPreset } from "@/contracts/studio";
 import { presetName, presetNotes } from "@/i18n/preset-text";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -17,7 +17,7 @@ import { newBlock, blockSummary, type Block } from "@/features/shared/types";
 import { readAllPages } from "@/features/shared/pagination";
 import { getStudioClient, studioCall } from "@/desktop/renderer/studio-client";
 
-export type GalleryExample = Pick<GalleryItem, "id" | "seed" | "rating" | "url" | "created_at">;
+export type GalleryExample = Pick<GenerationExample, "id" | "seed" | "rating" | "url" | "created_at">;
 export type BlockPresetCard = StoredPreset & { usage: number; examples: GalleryExample[] };
 
 export function useLibrarySort(library: "presets" | "characters") {
@@ -69,19 +69,6 @@ export function ExampleStrip({ examples, className, onClick, title }: { examples
 type MergeMode = "replace" | "merge";
 const isTagBlock = (block: Block | undefined): block is Extract<Block, { tags: string[] }> => !!block && "tags" in block;
 
-function presetCards(presets: StoredPreset[], gallery: GalleryItem[]): BlockPresetCard[] {
-  return presets.map(preset => {
-    const examples = gallery.filter(item => item.recipe.blocks.some(block => block.preset_id === preset.id)).slice(0, 3).map(item => ({
-      id: item.id,
-      seed: item.seed,
-      rating: item.rating,
-      url: item.url,
-      created_at: item.created_at,
-    }));
-    return { ...preset, usage: gallery.filter(item => item.recipe.blocks.some(block => block.preset_id === preset.id)).length, examples };
-  });
-}
-
 /** Pick a palette block while keeping the command client at the renderer boundary. */
 export function BlockPicker({ client, type, onOpenChange, onPick, replacing, existing, hideAdult = false, title }: {
   client?: StudioClient;
@@ -109,17 +96,15 @@ export function BlockPicker({ client, type, onOpenChange, onPick, replacing, exi
       setLoaded({ type, list: [] });
       return () => { alive = false; };
     }
-    Promise.allSettled([
-      readAllPages(({ limit, offset }) => studioCall(client, "presets.list", { limit, offset, type, includeHidden: false })),
-      studioCall(client, "gallery.list", { limit: 200, offset: 0, sort: "newest" }),
-    ]).then(([presetResult, galleryResult]) => {
+    void readAllPages(({ limit, offset }) => studioCall(client, "presets.list", { limit, offset, type, includeHidden: false })).then((presets) => {
       if (!alive) return;
-      if (presetResult.status !== "fulfilled") {
-        setLoaded({ type, list: [] });
-        return;
-      }
-      const gallery = galleryResult.status === "fulfilled" ? galleryResult.value.items : [];
-      setLoaded({ type, list: presetCards(presetResult.value, gallery) });
+      setLoaded({ type, list: presets.map((preset) => ({
+        ...preset,
+        usage: preset.usage ?? 0,
+        examples: (preset.examples ?? []).slice(0, 3),
+      })) });
+    }).catch(() => {
+      if (alive) setLoaded({ type, list: [] });
     });
     return () => { alive = false; };
   }, [client, type]);

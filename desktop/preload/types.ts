@@ -1,6 +1,7 @@
 import type { Command, CommandInput, CommandOutput, StudioEvent } from "../../contracts/studio";
 
 export type StudioBridge = {
+  readonly isMacOS: boolean;
   call<K extends Command>(command: K, input: CommandInput<K>): Promise<CommandOutput<K>>;
   subscribe(listener: (event: StudioEvent) => void): () => void;
   openExternal(url: string): Promise<{ opened: boolean }>;

@@ -64,5 +64,7 @@
   "note": "メモ",
   "saveNote": "メモを保存",
   "saveFailed": "評価の保存に失敗しました",
-  "adhoc": "単発生成"
+  "adhoc": "単発生成",
+  "continueSameSeed": "同じシードで続きを作る",
+  "continueNewSeed": "新しいシードで続きを作る"
 }

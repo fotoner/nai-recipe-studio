@@ -37,7 +37,7 @@ describe("recipe editor source naming", () => {
     });
     const client = { call, subscribe: vi.fn(() => () => undefined) } as unknown as StudioClient;
 
-    render(<RecipeEditorFeature client={client} recipeId={3} onBack={vi.fn()} onGenerate={vi.fn()} />);
+    render(<RecipeEditorFeature client={client} recipeId={3} onBack={vi.fn()} />);
     expect(await screen.findByRole("textbox", { name: "Recipe name" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Prompt · Lint" })).toBeInTheDocument();
     expect(screen.getByRole("group", { name: "Base" })).toBeInTheDocument();

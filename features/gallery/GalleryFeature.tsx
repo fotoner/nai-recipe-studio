@@ -8,12 +8,13 @@ import { readAllPages } from "@/features/shared/pagination";
 import { GalleryGrid } from "./GalleryGrid";
 import type { GalleryItem, GalleryQuery } from "./types";
 import { useGalleryTranslation } from "./locale";
+import type { GenerationDraftFromImage } from "@/core/recipe/from-generation";
 
 function toItem(item: StoredGalleryItem): GalleryItem {
   return { ...item, recipe_snapshot: JSON.stringify(item.recipe), characters: "characters" in item ? item.characters ?? [] : [], anlas_cost: item.estimatedAnlas } as GalleryItem;
 }
 
-export function GalleryFeature({ client, blurSensitive = false, onOpenRecipe }: { client?: StudioClient; blurSensitive?: boolean; onOpenRecipe: (id: number) => void }) {
+export function GalleryFeature({ client, blurSensitive = false, onOpenRecipe, onContinueFromGeneration }: { client?: StudioClient; blurSensitive?: boolean; onOpenRecipe: (id: number) => void; onContinueFromGeneration?: (draft: GenerationDraftFromImage) => void }) {
   const { t } = useGalleryTranslation();
   const [items, setItems] = React.useState<GalleryItem[] | null>(null);
   const [recipes, setRecipes] = React.useState<{ id: number; name: string }[]>([]);
@@ -95,7 +96,7 @@ export function GalleryFeature({ client, blurSensitive = false, onOpenRecipe }: 
     </div>
     <div className="p-4 md:p-6">
       {items === null ? <div className="flex items-center gap-2 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" />{t("loading")}</div> : <>
-        <GalleryGrid items={items} recipes={recipes} characters={characters} presets={presets} query={query} onQuery={reload} onDelete={onDelete} loading={reloading} blur={blurSensitive} onOpenRecipe={onOpenRecipe} onRate={onRate} onExport={async (item, includeMetadata) => { if (client) await studioCall(client, "gallery.export", { id: item.id, includeMetadata }); }} />
+        <GalleryGrid items={items} recipes={recipes} characters={characters} presets={presets} query={query} onQuery={reload} onDelete={onDelete} loading={reloading} blur={blurSensitive} onOpenRecipe={onOpenRecipe} onContinueFromGeneration={onContinueFromGeneration} onRate={onRate} onExport={async (item, includeMetadata) => { if (client) await studioCall(client, "gallery.export", { id: item.id, includeMetadata }); }} />
         {!reloading && items.length < total ? <div ref={sentinel} className="flex items-center justify-center gap-2 py-6 text-xs text-muted-foreground">{more ? <Loader2 className="size-4 animate-spin" /> : <ChevronDown className="size-4" />}{more ? t("loading") : t("remaining", { count: total - items.length })}</div> : !reloading && items.length > 0 ? <p className="py-6 text-center text-xs text-muted-foreground">{t("complete", { count: total })}</p> : null}
       </>}
     </div>

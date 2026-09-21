@@ -64,5 +64,7 @@
   "note": "메모",
   "saveNote": "메모 저장",
   "saveFailed": "평가 저장 실패",
-  "adhoc": "즉석 생성"
+  "adhoc": "즉석 생성",
+  "continueSameSeed": "같은 시드로 이어 만들기",
+  "continueNewSeed": "새 시드로 이어 만들기"
 }

@@ -27,6 +27,9 @@ export type MainIpcOptions = {
 };
 
 const APP_ALLOWED_COMMANDS = new Set<Command>([
+  "workspace.backup.export", "workspace.backup.inspect", "workspace.backup.restore",
+  "recipes.proposals.create", "recipes.proposals.list", "recipes.proposals.apply", "recipes.proposals.undo",
+  "characters.tagLookup",
   "status.read", "recipes.list", "recipes.get", "recipes.save", "recipes.duplicate", "recipes.delete", "recipes.versions",
   "characters.list", "characters.save", "characters.delete", "presets.list", "presets.save", "presets.delete", "recipe.compose", "recipe.validate",
   "generation.prepare", "generation.pending", "generation.approve", "generation.start", "generation.status", "generation.list", "generation.cancel", "gallery.list", "gallery.get", "gallery.rate", "gallery.delete", "gallery.export",

@@ -1,9 +1,11 @@
 import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
-import type { AccountStatus, Composed, GenerationJob, GenerationPlan, GalleryItem, GalleryListInput, Page, RecipeVersion, StoredCharacter, StoredPreset, StoredRecipe } from "../../contracts/studio";
+import type { AccountStatus, Composed, GenerationExample, GenerationJob, GenerationPlan, GalleryItem, GalleryListInput, Page, RecipeVersion, StoredCharacter, StoredPreset, StoredRecipe } from "../../contracts/studio";
 import type { BlockPreset, Character, Recipe } from "../../lib/schema";
+import type { RecipeProposal, RecipeProposalChange } from "../../contracts/proposals";
 import { PUBLIC_PALETTE } from "../../core/palette";
+import { createPresetMatcher, indexGenerationForPresets, matchesPreset } from "../../core/palette/matching";
 
 const json = (value: unknown) => JSON.stringify(value);
 const parse = <T>(value: unknown, fallback: T): T => {
@@ -23,7 +25,7 @@ export class SqliteSchemaError extends Error {
   constructor(message = "The workspace database schema is not supported by this app.") { super(message); this.name = "SqliteSchemaError"; }
 }
 
-export const SQLITE_SCHEMA_VERSION = 1;
+export const SQLITE_SCHEMA_VERSION = 2;
 
 export type StoredGeneration = {
   id: number;
@@ -157,6 +159,20 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS recipe_proposals (
+  id TEXT PRIMARY KEY,
+  recipe_id INTEGER NOT NULL REFERENCES recipes(id) ON DELETE CASCADE,
+  base_version INTEGER NOT NULL,
+  application_version INTEGER NOT NULL,
+  reason TEXT NOT NULL,
+  connection_id TEXT,
+  connection_name TEXT,
+  changes TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS recipe_proposals_recipe_idx ON recipe_proposals(recipe_id, created_at DESC);
 `;
 
 export class StudioSqliteStore {
@@ -268,13 +284,105 @@ export class StudioSqliteStore {
       .map(row => ({ version: Number(row.version), recipe: parse<Recipe>(row.recipe, {} as Recipe), created_at: String(row.created_at), note: String(row.note ?? "") }));
   }
 
+  createRecipeProposal(input: {
+    id: string;
+    recipeId: number;
+    expectedVersion: number;
+    reason: string;
+    connectionId?: string;
+    connectionName?: string;
+    expiresAt: string;
+    changes: RecipeProposalChange[];
+  }): RecipeProposal {
+    const stamp = now();
+    const transaction = this.db.transaction(() => {
+      const current = this.getRecipe(input.recipeId);
+      if (current.version !== input.expectedVersion) throw new SqliteConflictError();
+      this.db.prepare(`INSERT INTO recipe_proposals (id, recipe_id, base_version, application_version, reason, connection_id, connection_name, changes, created_at, updated_at, expires_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(input.id, input.recipeId, input.expectedVersion, input.expectedVersion, input.reason, input.connectionId ?? null, input.connectionName ?? null, json(input.changes), stamp, stamp, input.expiresAt);
+      return this.getRecipeProposal(input.id);
+    });
+    return transaction() as RecipeProposal;
+  }
+
+  getRecipeProposal(id: string): RecipeProposal {
+    const row = this.db.prepare("SELECT * FROM recipe_proposals WHERE id=?").get(id) as Record<string, unknown> | undefined;
+    if (!row) throw new SqliteNotFoundError(`Recipe proposal ${id} was not found.`);
+    return rowProposal(row);
+  }
+
+  listRecipeProposals(input: { recipeId?: number; connectionId?: string } = {}): RecipeProposal[] {
+    const conditions: string[] = [];
+    const params: Record<string, unknown> = {};
+    if (input.recipeId !== undefined) { conditions.push("recipe_id=@recipeId"); params.recipeId = input.recipeId; }
+    if (input.connectionId !== undefined) { conditions.push("connection_id=@connectionId"); params.connectionId = input.connectionId; }
+    const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+    return (this.db.prepare(`SELECT * FROM recipe_proposals ${where} ORDER BY created_at DESC, id DESC`).all(params) as Record<string, unknown>[]).map(rowProposal);
+  }
+
+  commitRecipeProposal(input: {
+    proposalId: string;
+    expectedVersion: number;
+    recipe: Recipe;
+    changes: RecipeProposalChange[];
+    note: string;
+  }): { proposal: RecipeProposal; recipe: StoredRecipe } {
+    const stamp = now();
+    const transaction = this.db.transaction(() => {
+      const proposalRow = this.db.prepare("SELECT * FROM recipe_proposals WHERE id=?").get(input.proposalId) as Record<string, unknown> | undefined;
+      if (!proposalRow) throw new SqliteNotFoundError(`Recipe proposal ${input.proposalId} was not found.`);
+      const proposal = rowProposal(proposalRow);
+      if (proposal.applicationVersion !== input.expectedVersion) throw new SqliteConflictError();
+      const current = this.getRecipe(proposal.recipeId);
+      if (current.version !== input.expectedVersion || input.recipe.id !== proposal.recipeId) throw new SqliteConflictError();
+      const nextVersion = current.version + 1;
+      const saved = { ...input.recipe, id: current.id, version: nextVersion, created_at: current.created_at, updated_at: stamp } as StoredRecipe;
+      this.db.prepare("UPDATE recipes SET name=?, tags=?, rating=?, blocks=?, source=?, notes=?, version=?, updated_at=? WHERE id=?")
+        .run(saved.name, json(saved.tags), saved.rating, json(saved.blocks), saved.source, saved.notes, nextVersion, stamp, saved.id);
+      this.db.prepare("INSERT INTO recipe_versions (recipe_id, version, recipe, note, created_at) VALUES (?, ?, ?, ?, ?)")
+        .run(saved.id, nextVersion, json(saved), input.note, stamp);
+      this.db.prepare("UPDATE recipe_proposals SET application_version=?, changes=?, updated_at=? WHERE id=?")
+        .run(nextVersion, json(input.changes), stamp, input.proposalId);
+      return { proposal: this.getRecipeProposal(input.proposalId), recipe: this.getRecipe(saved.id) };
+    });
+    return transaction() as { proposal: RecipeProposal; recipe: StoredRecipe };
+  }
+
   listCharacters(input: { query?: string; limit?: number; offset?: number } = {}): Page<StoredCharacter> {
     const query = input.query?.trim();
     const where = query ? "AND (tag LIKE @query OR series LIKE @query OR display_name LIKE @query OR notes LIKE @query)" : "";
     const params = query ? { query: `%${query}%` } : {};
     const total = (this.db.prepare(`SELECT COUNT(*) AS count FROM characters WHERE deleted_at IS NULL ${where}`).get(params) as { count: number }).count;
     const rows = this.db.prepare(`SELECT * FROM characters WHERE deleted_at IS NULL ${where} ORDER BY tag, id LIMIT @limit OFFSET @offset`).all({ ...params, limit: input.limit ?? 100, offset: input.offset ?? 0 }) as Record<string, unknown>[];
-    return { items: rows.map(rowCharacter), total };
+    const items = rows.map(rowCharacter);
+    if (items.length) {
+      const listedIds = new Set(items.map(item => item.id));
+      const usage = new Map<number, { count: number; examples: GenerationExample[] }>();
+      const generations = this.db.prepare("SELECT id, recipe_id, recipe, seed, rating, created_at FROM generations ORDER BY created_at DESC, id DESC").iterate() as Iterable<Record<string, unknown>>;
+      for (const generation of generations) {
+        const snapshot = parse<Recipe>(generation.recipe, { name: "", tags: [], rating: 0, blocks: [], source: "manual", notes: "" });
+        const characterIds = new Set<number>();
+        for (const block of snapshot.blocks ?? []) {
+          if (block.type !== "cast") continue;
+          for (const member of block.members) if (listedIds.has(member.character_id)) characterIds.add(member.character_id);
+        }
+        if (!characterIds.size) continue;
+        const example = rowGenerationExample(generation);
+        for (const id of characterIds) {
+          const summary = usage.get(id) ?? { count: 0, examples: [] };
+          summary.count += 1;
+          if (summary.examples.length < 4) summary.examples.push(example);
+          usage.set(id, summary);
+        }
+      }
+      for (const item of items) {
+        const summary = usage.get(item.id);
+        item.generation_count = summary?.count ?? 0;
+        item.examples = summary?.examples ?? [];
+      }
+    }
+    return { items, total };
   }
 
   getCharacter(id: number): StoredCharacter {
@@ -314,7 +422,30 @@ export class StudioSqliteStore {
     const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
     const total = (this.db.prepare(`SELECT COUNT(*) AS count FROM presets ${where}`).get(params) as { count: number }).count;
     const rows = this.db.prepare(`SELECT * FROM presets ${where} ORDER BY name, id LIMIT @limit OFFSET @offset`).all({ ...params, limit: input.limit ?? 100, offset: input.offset ?? 0 }) as Record<string, unknown>[];
-    return { items: rows.map(rowPreset), total };
+    const items = rows.map(rowPreset);
+    if (items.length) {
+      const matchers = items.map(preset => ({ id: preset.id, matcher: createPresetMatcher(preset) }));
+      const usage = new Map<number, { count: number; examples: GenerationExample[] }>();
+      const generations = this.db.prepare("SELECT id, recipe_id, recipe, seed, rating, created_at, base_prompt FROM generations ORDER BY created_at DESC, id DESC").iterate() as Iterable<Record<string, unknown>>;
+      for (const generation of generations) {
+        const snapshot = parse<Recipe>(generation.recipe, { name: "", tags: [], rating: 0, blocks: [], source: "manual", notes: "" });
+        const indexed = indexGenerationForPresets(snapshot, String(generation.base_prompt ?? ""));
+        const example = rowGenerationExample(generation);
+        for (const { id, matcher } of matchers) {
+          if (!matchesPreset(indexed, matcher)) continue;
+          const summary = usage.get(id) ?? { count: 0, examples: [] };
+          summary.count += 1;
+          if (summary.examples.length < 4) summary.examples.push(example);
+          usage.set(id, summary);
+        }
+      }
+      for (const item of items) {
+        const summary = usage.get(item.id);
+        item.usage = summary?.count ?? 0;
+        item.examples = summary?.examples ?? [];
+      }
+    }
+    return { items, total };
   }
 
   getPreset(id: number): StoredPreset {
@@ -441,16 +572,33 @@ export class StudioSqliteStore {
       characterIds.forEach((id, index) => { params[`characterId${index}`] = id; });
     }
     const presetIds = [...new Set(input.presetIds ?? [])];
-    if (presetIds.length) {
-      const placeholders = presetIds.map((_, index) => `@presetId${index}`).join(",");
-      conditions.push(`EXISTS (SELECT 1 FROM json_each(g.recipe, '$.blocks') AS block WHERE json_extract(block.value, '$.preset_id') IN (${placeholders}))`);
-      presetIds.forEach((id, index) => { params[`presetId${index}`] = id; });
-    }
     const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
     const order = input.sort === "oldest" ? "ASC" : "DESC";
-    const total = (this.db.prepare(`SELECT COUNT(*) AS count FROM generations g LEFT JOIN recipes r ON r.id=g.recipe_id LEFT JOIN ratings rt ON rt.generation_id=g.id ${where}`).get(params) as { count: number }).count;
-    const rows = this.db.prepare(`SELECT g.*, r.name AS recipe_name, rt.score, rt.liked, rt.note FROM generations g LEFT JOIN recipes r ON r.id=g.recipe_id LEFT JOIN ratings rt ON rt.generation_id=g.id ${where} ORDER BY g.created_at ${order}, g.id ${order} LIMIT @limit OFFSET @offset`).all({ ...params, limit: input.limit ?? 100, offset: input.offset ?? 0 }) as Record<string, unknown>[];
-    return { items: rows.map(rowGallery), total };
+    const query = `SELECT g.*, r.name AS recipe_name, rt.score, rt.liked, rt.note FROM generations g LEFT JOIN recipes r ON r.id=g.recipe_id LEFT JOIN ratings rt ON rt.generation_id=g.id ${where} ORDER BY g.created_at ${order}, g.id ${order}`;
+    const limit = input.limit ?? 100;
+    const offset = input.offset ?? 0;
+    if (!presetIds.length) {
+      const total = (this.db.prepare(`SELECT COUNT(*) AS count FROM generations g LEFT JOIN recipes r ON r.id=g.recipe_id LEFT JOIN ratings rt ON rt.generation_id=g.id ${where}`).get(params) as { count: number }).count;
+      const rows = this.db.prepare(`${query} LIMIT @limit OFFSET @offset`).all({ ...params, limit, offset }) as Record<string, unknown>[];
+      return { items: rows.map(rowGallery), total };
+    }
+
+    const placeholders = presetIds.map(() => "?").join(",");
+    const selectedRows = this.db.prepare(`SELECT * FROM presets WHERE id IN (${placeholders})`).all(...presetIds) as Record<string, unknown>[];
+    const matchers = selectedRows.map(rowPreset).map(preset => createPresetMatcher(preset));
+
+    const items: GalleryItem[] = [];
+    let total = 0;
+    const generations = this.db.prepare(query).iterate(params) as Iterable<Record<string, unknown>>;
+    for (const row of generations) {
+      const snapshot = parse<Recipe>(row.recipe, { name: "", tags: [], rating: 0, blocks: [], source: "manual", notes: "" });
+      const indexed = indexGenerationForPresets(snapshot, String(row.base_prompt ?? ""));
+      const linkedById = presetIds.some(id => indexed.presetIds.has(id));
+      if (!linkedById && !matchers.some(matcher => matchesPreset(indexed, matcher))) continue;
+      if (total >= offset && items.length < limit) items.push(rowGallery(row));
+      total += 1;
+    }
+    return { items, total };
   }
 
   rateGallery(id: number, input: { score?: number | null; liked?: boolean; note?: string }) {
@@ -474,6 +622,28 @@ function rowRecipe(row: Record<string, unknown>): StoredRecipe {
   };
 }
 
+function rowProposal(row: Record<string, unknown>): RecipeProposal {
+  const changes = parse<RecipeProposalChange[]>(row.changes, []);
+  const expiresAt = String(row.expires_at);
+  const allApplied = changes.length > 0 && changes.every(change => change.state === "applied");
+  const hasApplied = changes.some(change => change.state === "applied");
+  const status: RecipeProposal["status"] = allApplied ? "applied" : Date.parse(expiresAt) <= Date.now() ? "expired" : hasApplied ? "partial" : "pending";
+  return {
+    id: String(row.id),
+    recipeId: Number(row.recipe_id),
+    baseVersion: Number(row.base_version),
+    applicationVersion: Number(row.application_version),
+    reason: String(row.reason),
+    ...(row.connection_id ? { connectionId: String(row.connection_id) } : {}),
+    ...(row.connection_name ? { connectionName: String(row.connection_name) } : {}),
+    createdAt: String(row.created_at),
+    updatedAt: String(row.updated_at),
+    expiresAt,
+    status,
+    changes,
+  };
+}
+
 function rowCharacter(row: Record<string, unknown>): StoredCharacter {
   return {
     id: Number(row.id), tag: String(row.tag), series: String(row.series), display_name: String(row.display_name), gender: row.gender as Character["gender"], age_flag: row.age_flag as Character["age_flag"], locked: !!row.locked,
@@ -490,6 +660,18 @@ function rowPreset(row: Record<string, unknown>): StoredPreset {
 
 function rowJob(row: Record<string, unknown>): GenerationJob {
   return { id: String(row.id), planId: String(row.plan_id), state: row.state as GenerationJob["state"], total: Number(row.total), completed: Number(row.completed), generationIds: parse<number[]>(row.generation_ids, []), ...(row.error ? { error: parse(row.error, row.error as never) } : {}), created_at: String(row.created_at) };
+}
+
+function rowGenerationExample(row: Record<string, unknown>): GenerationExample {
+  const id = Number(row.id);
+  return {
+    id,
+    recipe_id: row.recipe_id == null ? null : Number(row.recipe_id),
+    seed: Number(row.seed),
+    created_at: String(row.created_at),
+    rating: Number(row.rating),
+    url: `recipe-studio://app/images/${id}`,
+  };
 }
 
 function rowPlan(row: Record<string, unknown>): StoredPlanRow {

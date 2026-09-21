@@ -73,27 +73,31 @@ describe("desktop renderer command boundary", () => {
     expect(calls).toContain("recipes.list");
   });
 
-  it("prepares a plan, requires approval, then starts a generation job", async () => {
-    const { client, call, calls } = fakeClient();
+  it("prepares a plan automatically and starts one generation job from a single action", async () => {
+    const { client, call, calls } = fakeClient({
+      "status.read": { appVersion: "0.1.0", schemaVersion: 1, connected: true, account: null, dryRun: false, locale: "en" },
+    });
     render(<GenerationFeature client={client} initialRecipe={storedRecipe()} onOpenGallery={vi.fn()} />);
     expect(await screen.findByText("Morning recipe")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Prepare" }));
-    await waitFor(() => expect(screen.getByText(/Estimated use/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText(/Estimated use: about 10 Anlas/)).toBeInTheDocument());
     expect(calls).toContain("generation.prepare");
-    fireEvent.click(screen.getByRole("button", { name: "Approve and start" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /paid generation cost/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Generate 1 image" }));
     await waitFor(() => expect(call).toHaveBeenCalledWith("generation.start", expect.objectContaining({ planId: "plan-1" })));
     expect(calls).toEqual(expect.arrayContaining(["generation.approve", "generation.start"]));
+    expect(screen.queryByRole("button", { name: "Prepare" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Approve and start" })).not.toBeInTheDocument();
   });
 
   it("shows the MCP estimate and blocks approval when the cost is unknown", async () => {
-    const plan = { id: "pending-1", recipe: storedRecipe(), count: 1, seeds: [42], estimatedAnlas: null, findings: [], expiresAt: "2099-01-01T00:00:00.000Z", approved: false, account: null };
+    const plan = { id: "pending-1", recipe: storedRecipe(), count: 1, seeds: [42], estimatedAnlas: null, findings: [], expiresAt: "2099-01-01T00:00:00.000Z", approved: false, account: null, connectionId: "connection-1", connectionName: "Codex" };
     const { client, call } = fakeClient({
       "generation.pending": [plan],
       "generation.list": [],
       "status.read": { appVersion: "0.1.0", schemaVersion: 1, connected: false, account: null, dryRun: false, locale: "en" },
     });
     render(<GenerationFeature client={client} onOpenGallery={vi.fn()} />);
-    await screen.findByText("Waiting for approval");
+    await screen.findByText("Pending generation plans");
     fireEvent.change(screen.getByRole("combobox"), { target: { value: "pending-1" } });
     expect(screen.getByText(/Estimated cost: Generation settings need review/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Approve plan" })).toBeDisabled();
@@ -101,14 +105,14 @@ describe("desktop renderer command boundary", () => {
   });
 
   it("requires paid confirmation before approving a paid MCP plan", async () => {
-    const plan = { id: "paid-pending-1", recipe: storedRecipe(), count: 1, seeds: [42], estimatedAnlas: 12, findings: [], expiresAt: "2099-01-01T00:00:00.000Z", approved: false, account: null };
+    const plan = { id: "paid-pending-1", recipe: storedRecipe(), count: 1, seeds: [42], estimatedAnlas: 12, findings: [], expiresAt: "2099-01-01T00:00:00.000Z", approved: false, account: null, connectionId: "connection-1", connectionName: "Codex" };
     const { client, call } = fakeClient({
       "generation.pending": [plan],
       "generation.list": [],
       "status.read": { appVersion: "0.1.0", schemaVersion: 1, connected: true, account: null, dryRun: false, locale: "en" },
     });
     render(<GenerationFeature client={client} onOpenGallery={vi.fn()} />);
-    await screen.findByText("Waiting for approval");
+    await screen.findByText("Pending generation plans");
     fireEvent.change(screen.getByRole("combobox"), { target: { value: "paid-pending-1" } });
     const approve = screen.getByRole("button", { name: "Approve plan" });
     expect(screen.getByRole("checkbox", { name: /paid generation cost/i })).toBeInTheDocument();
@@ -116,16 +120,15 @@ describe("desktop renderer command boundary", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: /paid generation cost/i }));
     await waitFor(() => expect(approve).toBeEnabled());
     fireEvent.click(approve);
-    await waitFor(() => expect(call).toHaveBeenCalledWith("generation.approve", { planId: "paid-pending-1" }));
+    await waitFor(() => expect(call).toHaveBeenCalledWith("generation.approve", { planId: "paid-pending-1", allowPaid: true }));
   });
 
   it("cancels the active job when stopping after the current recipe", async () => {
     const { client, call } = fakeClient();
     render(<GenerationFeature client={client} initialRecipe={storedRecipe()} onOpenGallery={vi.fn()} />);
     await screen.findByText("Morning recipe");
-    fireEvent.click(screen.getByRole("button", { name: "Prepare" }));
-    await screen.findByRole("button", { name: "Approve and start" });
-    fireEvent.click(screen.getByRole("button", { name: "Approve and start" }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Generate 1 image" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Generate 1 image" }));
     await screen.findByRole("button", { name: "Stop after the current recipe" });
     fireEvent.click(screen.getByRole("button", { name: "Stop after the current recipe" }));
     await waitFor(() => expect(call).toHaveBeenCalledWith("generation.cancel", { id: "job-1" }));

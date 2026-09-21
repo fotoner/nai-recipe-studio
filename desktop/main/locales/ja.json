@@ -6,5 +6,7 @@
   "closeTitle": "ウィンドウを閉じますか？",
   "closeDescription": "未保存の変更、または進行中の処理があります。このウィンドウを閉じますか？",
   "keepOpen": "作業を続ける",
-  "discardAndClose": "閉じる"
+  "discardAndClose": "閉じる",
+  "exportWorkspaceBackup": "ワークスペースのバックアップを作成",
+  "importWorkspaceBackup": "ワークスペースのバックアップを確認"
 }

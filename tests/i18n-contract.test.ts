@@ -16,7 +16,7 @@ function flatten(value: Record<string, unknown>, prefix = ""): Record<string, st
 }
 
 describe("bundled language resources", () => {
-  const featureResources = import.meta.glob(["../features/*/locales/*.json", "../desktop/main/locales/*.json"], { eager: true, import: "default" }) as Record<string, Record<string, unknown>>;
+  const featureResources = import.meta.glob(["../features/*/locales/*.json", "../features/*/*-locales/*.json", "../desktop/main/locales/*.json"], { eager: true, import: "default" }) as Record<string, Record<string, unknown>>;
   const english = flatten(en);
   for (const [locale, source] of Object.entries({ ko, ja })) {
     it(`${locale} has every English key and the same interpolation fields`, () => {

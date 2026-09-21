@@ -11,8 +11,6 @@ asar: true
 asarUnpack:
   - node_modules/better-sqlite3/**
 extraResources:
-  - from: runtime/mcp
-    to: mcp
   - from: skills/recipe-studio
     to: skills/recipe-studio
   - from: desktop/release/manifest.json
@@ -20,6 +18,7 @@ extraResources:
   - from: desktop/release/licenses
     to: licenses
 npmRebuild: true
+afterPack: ./scripts/after-pack.cjs
 publish: null
 mac:
   identity: "-"

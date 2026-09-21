@@ -27,8 +27,9 @@ async function invoke<T>(ipcRenderer: IpcRendererLike, channel: string, payload?
   }
 }
 
-export function createStudioBridge(ipcRenderer: IpcRendererLike): StudioBridge {
+export function createStudioBridge(ipcRenderer: IpcRendererLike, platform: NodeJS.Platform = process.platform): StudioBridge {
   return {
+    isMacOS: platform === "darwin",
     call<K extends Command>(command: K, input: CommandInput<K>) {
       return invoke<CommandOutput<K>>(ipcRenderer, IPC_CHANNELS.call, { command, input });
     },

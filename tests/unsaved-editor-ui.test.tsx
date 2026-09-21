@@ -4,10 +4,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseCommandInput, type Command, type StudioClient } from "../contracts/studio";
 import { changeLanguage } from "../i18n";
 import { RendererApp } from "../features/app/AppShell";
+import { CastBlock } from "../lib/schema";
 import { newRecipe, type Recipe } from "../features/shared/types";
 
 function storedRecipe(): Recipe {
-  return { ...newRecipe("Morning recipe"), id: 7, version: 1, created_at: "2026-09-20T09:00:00.000Z", updated_at: "2026-09-20T09:00:00.000Z" };
+  const recipe = newRecipe("Morning recipe");
+  recipe.blocks.unshift(CastBlock.parse({ type: "cast", members: [{ character_id: 1 }] }));
+  return { ...recipe, id: 7, version: 1, created_at: "2026-09-20T09:00:00.000Z", updated_at: "2026-09-20T09:00:00.000Z" };
 }
 
 function fakeClient() {
@@ -26,6 +29,9 @@ function fakeClient() {
     if (command === "recipes.versions") return [];
     if (command === "recipe.compose") return { base_prompt: "", negative: "", characters: [], settings: { type: "settings", width: 832, height: 1216, steps: 28, scale: 5, rescale: 0.3, sampler: "k_euler_ancestral", schedule: "karras", seed_policy: "random", quality_preset: "none", uc_preset: "heavy" }, rating: 0 };
     if (command === "recipe.validate") return { findings: [], recipe: (input as { recipe: Recipe }).recipe, applied: [] };
+    if (command === "generation.prepare") return { id: "plan-1", recipe: (input as { recipe: Recipe }).recipe, count: 1, seeds: [12], estimatedAnlas: 0, findings: [], expiresAt: "2099-01-01T00:00:00.000Z", approved: false, account: null };
+    if (command === "generation.approve") return { id: "plan-1", approved: true };
+    if (command === "generation.start" || command === "generation.status") return { id: "job-1", planId: "plan-1", state: "running", total: 1, completed: 0, generationIds: [], created_at: "2026-09-20T10:00:00Z" };
     if (command === "generation.pending") return [];
     if (command === "generation.list") return [];
     return {};
@@ -110,14 +116,16 @@ describe("unsaved recipe protection", () => {
     }
   });
 
-  it("saves the draft before transferring it to generation", async () => {
+  it("generates the current draft in the editor without implicitly saving it", async () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
     try {
       const { call } = await makeDirty();
       fireEvent.click(within(screen.getByRole("region", { name: "Recipe details" })).getByRole("button", { name: "Generate" }));
-      await waitFor(() => expect(call).toHaveBeenCalledWith("recipes.save", expect.objectContaining({ recipe: expect.objectContaining({ name: "Unsaved draft" }) })));
-      await screen.findByRole("heading", { name: "Generate" });
-      expect(window.location.hash).toBe("#/generate");
+      await screen.findByRole("dialog");
+      await waitFor(() => expect(call).toHaveBeenCalledWith("generation.prepare", expect.objectContaining({ recipe: expect.objectContaining({ name: "Unsaved draft" }) })));
+      expect(call).not.toHaveBeenCalledWith("recipes.save", expect.anything());
+      expect(window.location.hash).toBe("#/recipe/7");
+      expect(screen.getByRole("textbox", { name: "Recipe name", hidden: true })).toHaveValue("Unsaved draft");
       expect(confirm).not.toHaveBeenCalled();
     } finally {
       confirm.mockRestore();
@@ -131,4 +139,31 @@ describe("unsaved recipe protection", () => {
     expect(cleanEvent.defaultPrevented).toBe(true);
     expect(name).toHaveValue("Unsaved draft");
   });
+});
+
+
+it("keeps an active generation visible when navigation is cancelled", async () => {
+  const confirm = vi.spyOn(window, "confirm").mockReturnValue(false);
+  try {
+    await renderEditor();
+    fireEvent.click(within(screen.getByRole("region", { name: "Recipe details" })).getByRole("button", { name: "Generate" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Generate 1 image" }));
+    await screen.findByRole("region", { name: "Current generation results" });
+    fireEvent.click(screen.getByRole("button", { name: "Recipes" }));
+    await waitFor(() => expect(confirm).toHaveBeenCalled());
+    expect(window.location.hash).toBe("#/recipe/7");
+    expect(screen.getByRole("region", { name: "Current generation results" })).toBeInTheDocument();
+  } finally { confirm.mockRestore(); }
+});
+
+it("preserves the active tag field in the recovery copy before the app closes", async () => {
+  await renderEditor();
+  const tags = screen.getByRole("textbox", { name: "Tags" });
+  tags.focus();
+  fireEvent.change(tags, { target: { value: "in progress, keep this" } });
+  const closing = new Event("beforeunload", { cancelable: true });
+  fireEvent(window, closing);
+  const savedDraft = JSON.parse(localStorage.getItem("nai-recipe-studio:draft:v1:recipe:7") ?? "null");
+  expect(savedDraft?.recipe.tags).toEqual(["in progress", "keep this"]);
+  expect(closing.defaultPrevented).toBe(true);
 });

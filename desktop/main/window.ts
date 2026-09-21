@@ -21,12 +21,13 @@ export function rendererLocation(packaged: boolean, env: NodeJS.ProcessEnv = pro
   } catch { return bundled; }
 }
 
-export function createBrowserWindowOptions(preload: string, bounds: { width: number; height: number; x?: number; y?: number; maximized?: boolean }) {
+export function createBrowserWindowOptions(preload: string, bounds: { width: number; height: number; x?: number; y?: number; maximized?: boolean }, platform: NodeJS.Platform = process.platform) {
   return {
     width: bounds.width,
     height: bounds.height,
     ...(bounds.x === undefined ? {} : { x: bounds.x }),
     ...(bounds.y === undefined ? {} : { y: bounds.y }),
+    ...(platform === "darwin" ? { titleBarStyle: "hiddenInset" as const } : {}),
     show: false,
     backgroundColor: "#17171b",
     webPreferences: { ...SECURE_WEB_PREFERENCES, preload },

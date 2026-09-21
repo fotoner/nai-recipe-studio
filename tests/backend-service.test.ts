@@ -193,14 +193,14 @@ describe("studio service storage and public command boundary", () => {
       const imageLimited = await service.call("generation.prepare", { recipe, count: 2, seed: 12 }, { source: "mcp", connection });
       expect(imageLimited.estimatedAnlas).toBeGreaterThan(0);
       expect((await service.call("generation.pending", {})).map(item => item.id)).toContain(imageLimited.id);
-      await service.call("generation.approve", { planId: imageLimited.id }, { source: "ui" });
+      await service.call("generation.approve", { planId: imageLimited.id, allowPaid: true }, { source: "ui" });
       await expect(service.call("generation.start", { planId: imageLimited.id, requestId: "image-budget" }, { source: "mcp", connection }))
         .rejects.toMatchObject({ data: { code: "APPROVAL_REQUIRED" } });
       expect((await service.call("generation.pending", {})).map(item => item.id)).toContain(imageLimited.id);
 
       const anlasLimited = await service.call("generation.prepare", { recipe, count: 1, seed: 13 }, { source: "mcp", connection });
       const limitedConnection = { ...connection, maxImages: 1, maxAnlas: Math.max(0, (anlasLimited.estimatedAnlas ?? 1) - 1) };
-      await service.call("generation.approve", { planId: anlasLimited.id }, { source: "ui" });
+      await service.call("generation.approve", { planId: anlasLimited.id, allowPaid: true }, { source: "ui" });
       await expect(service.call("generation.start", { planId: anlasLimited.id, requestId: "anlas-budget" }, { source: "mcp", connection: limitedConnection }))
         .rejects.toMatchObject({ data: { code: "APPROVAL_REQUIRED" } });
     } finally {
@@ -258,13 +258,13 @@ describe("studio service storage and public command boundary", () => {
 });
 
 describe("generation service", () => {
-  it("keeps unknown account costs unknown and requires UI approval", async () => {
+  it("uses a zero quote in dry-run and requires UI approval", async () => {
     const dataDir = await tempProfile();
     const service = createStudioService({ dataDir, getToken: tokenless, dryRun: true });
     try {
       const recipe = makeRecipe("Generate me", [{ type: "scene", tags: ["indoors"], text: "" }, { type: "negative", base_preset: "heavy", rating: 0, extra: ["official art", "official style"] }]);
       const plan = await service.call("generation.prepare", { recipe, count: 2, seed: 42 });
-      expect(plan.estimatedAnlas).toBeNull();
+      expect(plan.estimatedAnlas).toBe(0);
       expect(plan.approved).toBe(false);
       await expect(service.call("generation.approve", { planId: plan.id }, { source: "mcp" })).rejects.toMatchObject({ data: { code: "PERMISSION_DENIED" } });
       const approved = await service.call("generation.approve", { planId: plan.id }, { source: "ui" });
@@ -292,7 +292,7 @@ describe("generation service", () => {
     }
   });
 
-  it("blocks production start when the rechecked account quote is unknown", async () => {
+  it("blocks approval when the production account quote is unknown", async () => {
     const dataDir = await tempProfile();
     const fetchImpl = vi.fn(async () => new Response(JSON.stringify({}), { status: 200, headers: { "content-type": "application/json" } })) as unknown as typeof fetch;
     const service = createStudioService({ dataDir, getToken: async () => "injected-token", fetch: fetchImpl });
@@ -300,9 +300,9 @@ describe("generation service", () => {
       const recipe = makeRecipe("Unknown quote", [{ type: "scene", tags: ["indoors"], text: "" }]);
       const plan = await service.call("generation.prepare", { recipe, count: 1, seed: 8 });
       expect(plan.estimatedAnlas).toBeNull();
-      await service.call("generation.approve", { planId: plan.id }, { source: "ui" });
-      await expect(service.call("generation.start", { planId: plan.id, requestId: "unknown-quote" }, { source: "ui" })).rejects.toMatchObject({ data: { code: "COST_UNKNOWN" } });
-      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      await expect(service.call("generation.approve", { planId: plan.id }, { source: "ui" })).rejects.toMatchObject({ data: { code: "COST_UNKNOWN" } });
+      expect((await service.call("generation.pending", {})).map(item => item.id)).toContain(plan.id);
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
     } finally {
       await service.close();
       await rm(dataDir, { recursive: true, force: true });
@@ -367,8 +367,8 @@ describe("generation service", () => {
       const recipe = makeRecipe("Queued cancellation", [{ type: "scene", tags: ["indoors"], text: "" }]);
       const firstPlan = await service.call("generation.prepare", { recipe, count: 1, seed: 20 });
       const secondPlan = await service.call("generation.prepare", { recipe, count: 1, seed: 21 });
-      await service.call("generation.approve", { planId: firstPlan.id }, { source: "ui" });
-      await service.call("generation.approve", { planId: secondPlan.id }, { source: "ui" });
+      await service.call("generation.approve", { planId: firstPlan.id, allowPaid: true }, { source: "ui" });
+      await service.call("generation.approve", { planId: secondPlan.id, allowPaid: true }, { source: "ui" });
       const firstJob = await service.call("generation.start", { planId: firstPlan.id, requestId: "queued-first" }, { source: "ui" });
       const secondJob = await service.call("generation.start", { planId: secondPlan.id, requestId: "queued-second" }, { source: "ui" });
       await waitFor(async () => generationCalls, value => value === 1);
