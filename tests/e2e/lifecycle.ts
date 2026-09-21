@@ -33,10 +33,13 @@ export async function quitApplication(application: ElectronApplication) {
 /** Keep synthetic UI tests from taking keyboard input from the user's desktop. */
 export async function keepTestAppInBackground(application: ElectronApplication) {
   await application.firstWindow();
-  await application.evaluate(({ BrowserWindow }) => {
+  // Windows stops producing frames for a hidden window, which stalls
+  // Playwright's stability check before every click. Unfocusable is enough there.
+  const hide = process.platform !== "win32";
+  await application.evaluate(({ BrowserWindow }, hide) => {
     for (const window of BrowserWindow.getAllWindows()) {
       window.setFocusable(false);
-      window.hide();
+      if (hide) window.hide();
     }
-  });
+  }, hide);
 }
