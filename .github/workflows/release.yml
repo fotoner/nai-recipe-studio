@@ -1,0 +1,64 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - name: Tag must match package.json and the release manifest
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          package="v$(jq -r .version package.json)"
+          manifest="v$(jq -r .appVersion desktop/release/manifest.json)"
+          if [ "$TAG" != "$package" ] || [ "$TAG" != "$manifest" ]; then
+            echo "::error::Tag $TAG, package.json $package, and manifest $manifest must agree."
+            exit 1
+          fi
+
+  desktop:
+    needs: version
+    uses: ./.github/workflows/check.yml
+
+  publish:
+    needs: desktop
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: desktop-*
+          path: assets
+          merge-multiple: true
+      - name: Checksums
+        working-directory: assets
+        run: |
+          ls -l
+          sha256sum -- * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      # A draft keeps unsigned packages private until each OS build has been opened by hand.
+      - name: Draft GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          flags=()
+          case "$TAG" in *-*) flags+=(--prerelease) ;; esac
+          gh release create "$TAG" assets/* \
+            --draft --verify-tag --title "NAI Recipe Studio $TAG" \
+            --notes-file .github/release-notes.md --generate-notes "${flags[@]}"

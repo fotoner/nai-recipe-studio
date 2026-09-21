@@ -16,9 +16,10 @@ MCP 개발용 Node 런타임은 `pnpm bundle:runtime`으로 준비합니다. 필
 ```bash
 pnpm exec electron-builder --mac --x64 --publish never
 pnpm exec electron-builder --win --x64 --publish never
+pnpm exec electron-builder --linux --x64 --publish never
 ```
 
-두 번째 명령은 Windows 네이티브 runner에서 실행해 SQLite 네이티브 모듈도 Windows x64용으로 재빌드합니다.
+두 번째와 세 번째 명령은 각각 Windows·Linux 네이티브 runner에서 실행해 SQLite 네이티브 모듈도 해당 OS용으로 재빌드합니다. Linux E2E는 화면이 없는 환경에서 `xvfb-run -a pnpm test:e2e`로 실행하며, Ubuntu 24.04에서는 Chromium 샌드박스를 위해 `kernel.apparmor_restrict_unprivileged_userns=0`이 필요합니다.
 
 단위 테스트는 임시 SQLite와 합성 레시피를 사용합니다. 전역 `fetch`는 기본 차단되며, 네트워크 경계는 주입된 응답으로 검증합니다. 실계정의 토큰·구독 API·이미지 생성 API는 자동 테스트에서 사용하지 않습니다. UI 테스트는 jsdom과 React Testing Library를 사용합니다.
 

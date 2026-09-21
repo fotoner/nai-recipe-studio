@@ -5,6 +5,7 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
 permissions:
   contents: read
@@ -18,7 +19,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-15, macos-15-intel, windows-2022]
+        os: [macos-15, macos-15-intel, windows-2022, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     env:
@@ -34,7 +35,13 @@ jobs:
       - run: pnpm check
       - run: pnpm build
       - run: pnpm bundle:runtime
-      - run: pnpm test:e2e --max-failures=1
+      - if: runner.os != 'Linux'
+        run: pnpm test:e2e --max-failures=1
+      # Ubuntu 24.04 blocks the unprivileged user namespaces that Chromium's sandbox needs.
+      - if: runner.os == 'Linux'
+        run: |
+          sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          xvfb-run -a pnpm test:e2e --max-failures=1
       - run: pnpm exec electron-builder --publish never
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -43,6 +50,8 @@ jobs:
             release/*.dmg
             release/*.zip
             release/*.exe
+            release/*.AppImage
+            release/*.deb
           if-no-files-found: error
           retention-days: 14
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

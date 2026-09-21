@@ -134,6 +134,39 @@ describe("per-target packaging runtime", () => {
     } finally { await rm(root, { recursive: true, force: true }); }
   });
 
+  it("packages a Linux x64 runtime from the official Node archive", async () => {
+    const hook = require("../scripts/after-pack.cjs") as {
+      bundleOptions(context: Record<string, unknown>): Record<string, unknown>;
+    };
+    const { targetCatalog } = require("../scripts/runtime-bundler.cjs") as {
+      targetCatalog: Record<string, { archive: string; sha256: string; binary: string }>;
+    };
+    const linuxOut = path.join(tmpdir(), "nai-pack-fixture", "linux-unpacked");
+
+    expect(hook.bundleOptions({
+      appOutDir: linuxOut,
+      electronPlatformName: "linux",
+      arch: 1,
+      packager: { getResourcesDir: (outDir: string) => path.join(outDir, "resources") },
+    })).toEqual({
+      platform: "linux",
+      arch: "x64",
+      destination: path.join(linuxOut, "resources", "mcp"),
+      helperScript: path.resolve("dist/mcp/index.cjs"),
+    });
+    expect(targetCatalog["linux-x64"]).toMatchObject({ archive: "node-v24.21.0-linux-x64.tar.gz", binary: "bin/node" });
+    expect(targetCatalog["linux-x64"].sha256).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it("declares Linux packages and space-free artifact names for release uploads", async () => {
+    const config = await readFile(new URL("../electron-builder.yml", import.meta.url), "utf8");
+    const manifest = JSON.parse(await readFile(new URL("../desktop/release/manifest.json", import.meta.url), "utf8")) as { platforms: Record<string, string[]> };
+    expect(config).toMatch(/^linux:\n(?: {2}.*\n)*? {4}- target: AppImage\n/m);
+    expect(config).toMatch(/^linux:\n(?: {2}.*\n)*? {4}- target: deb\n/m);
+    expect(config).toContain("artifactName: ${name}-${version}-${os}-${arch}.${ext}");
+    expect(manifest.platforms.Linux).toEqual(["x64"]);
+  });
+
   it("uses an afterPack hook instead of copying one shared host runtime into every package", async () => {
     const config = await readFile(new URL("../electron-builder.yml", import.meta.url), "utf8");
     expect(config).toContain("afterPack: ./scripts/after-pack.cjs");

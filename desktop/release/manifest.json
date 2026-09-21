@@ -5,7 +5,8 @@
   "skillVersion": "0.1.0",
   "platforms": {
     "macOS": ["arm64", "x64"],
-    "Windows": ["x64"]
+    "Windows": ["x64"],
+    "Linux": ["x64"]
   },
   "defaultLanguage": "system",
   "languages": ["ko", "ja", "en"],

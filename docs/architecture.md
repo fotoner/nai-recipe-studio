@@ -73,4 +73,4 @@ MCP helper는 DB를 직접 열지 않고, 실행 중인 앱의 인증된 로컬 
 
 ## 배포
 
-`desktop/release/manifest.json`이 앱·프로토콜·스킬 버전과 대상 플랫폼을 기록합니다. 배포물에는 빌드된 코드·로컬 리소스·MCP 런타임만 포함합니다. 데이터베이스, 환경 파일, 사용자 출력, 소스맵은 배포 검사에서 제외 대상으로 처리합니다.
+`desktop/release/manifest.json`이 앱·프로토콜·스킬 버전과 대상 플랫폼을 기록합니다. 배포물에는 빌드된 코드·로컬 리소스·MCP 런타임만 포함합니다. 데이터베이스, 환경 파일, 사용자 출력, 소스맵은 배포 검사에서 제외 대상으로 처리합니다. `pnpm build`는 배포물에 실제로 포함되는 패키지의 의존성 폐포에서 `THIRD-PARTY-NOTICES.txt`를 생성하며, 새 외부 패키지를 import하면 `scripts/third-party-notices.cjs`의 루트 목록에 추가해야 테스트가 통과합니다. `v*` 태그는 `Release` 워크플로로 네 대상(macOS arm64·x64, Windows x64, Linux x64)의 초안 릴리스를 만듭니다.

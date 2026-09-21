@@ -1,6 +1,6 @@
 # NAI Recipe Studio
 
-NovelAI 프롬프트를 블록으로 편집하고 생성 결과를 레시피와 함께 보관하는 Windows·macOS 데스크톱 앱입니다. 한국어·日本語·English를 지원합니다.
+NovelAI 프롬프트를 블록으로 편집하고 생성 결과를 레시피와 함께 보관하는 Windows·macOS·Linux 데스크톱 앱입니다. 한국어·日本語·English를 지원합니다.
 
 API 토큰 없이 레시피 작성·저장·검사를 사용할 수 있습니다. 이미지 생성에는 사용자의 NovelAI 계정이 필요합니다. NAI Recipe Studio는 NovelAI의 공식 제품이 아닙니다.
 
@@ -31,7 +31,17 @@ pnpm package:dir # 현재 OS의 실행 가능한 앱 폴더
 pnpm package     # 현재 OS의 설치 패키지
 ```
 
-Windows 패키지는 Windows에서, macOS 패키지는 해당 아키텍처의 macOS에서 빌드합니다. 기본 macOS 패키지는 로컬 실행용 ad-hoc 서명을 사용하며 공증하지 않습니다. 공식 배포에는 Developer ID 서명·공증과 각 OS 검증이 필요합니다. [electron-builder 서명 안내](https://www.electron.build/v26/docs/features/code-signing/code-signing-mac/)
+Windows 패키지는 Windows에서, macOS 패키지는 해당 아키텍처의 macOS에서, Linux 패키지(AppImage·deb, x64)는 Linux에서 빌드합니다. 기본 macOS 패키지는 로컬 실행용 ad-hoc 서명을 사용하며 공증하지 않습니다. 공식 배포에는 Developer ID 서명·공증과 각 OS 검증이 필요합니다. [electron-builder 서명 안내](https://www.electron.build/v26/docs/features/code-signing/code-signing-mac/)
+
+## 릴리스
+
+`package.json`과 `desktop/release/manifest.json`의 버전을 올려 main에 반영한 뒤 같은 버전의 태그를 푸시합니다.
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+`Release` 워크플로가 macOS(arm64·x64)·Windows·Linux에서 검사와 E2E를 다시 실행하고, 패키지와 `SHA256SUMS.txt`를 붙인 **초안** 릴리스를 만듭니다. 각 OS에서 설치 파일을 직접 열어 본 뒤 GitHub에서 초안을 게시합니다. 태그와 두 버전이 다르면 워크플로가 중단됩니다.
 
 ## 외부 AI 연결
 
@@ -49,7 +59,7 @@ Windows 패키지는 Windows에서, macOS 패키지는 해당 아키텍처의 ma
 
 NovelAI의 **User Settings → Account → Get Persistent API Token**에서 토큰을 발급해 앱의 설정에 붙여 넣습니다. 재발급하면 기존 토큰은 무효화됩니다. [NovelAI 계정 설정 안내](https://docs.novelai.net/en/text/usersettings/account/)
 
-토큰은 운영체제 보안 저장 기능을 통해 암호화하고 renderer와 MCP에는 조회 기능을 제공하지 않습니다. 채팅이나 레시피 JSON에 토큰을 넣지 마세요. 생성 이미지와 메타데이터는 앱 프로필 및 사용자가 고른 출력 폴더에 저장됩니다. 공유용 이미지 내보내기는 기본적으로 프롬프트 메타데이터를 제거합니다.
+토큰은 운영체제 보안 저장 기능을 통해 암호화하고 renderer와 MCP에는 조회 기능을 제공하지 않습니다. Linux에서는 GNOME Keyring·KWallet 같은 키링이 있어야 저장할 수 있으며, 키링이 없으면 토큰을 디스크에 쓰지 않고 현재 세션에서만 사용합니다. 채팅이나 레시피 JSON에 토큰을 넣지 마세요. 생성 이미지와 메타데이터는 앱 프로필 및 사용자가 고른 출력 폴더에 저장됩니다. 공유용 이미지 내보내기는 기본적으로 프롬프트 메타데이터를 제거합니다.
 
 자세한 개발 구조는 [아키텍처](docs/architecture.md), 검증 방법과 한계는 [TESTING.md](TESTING.md)를 참조하세요.
 
